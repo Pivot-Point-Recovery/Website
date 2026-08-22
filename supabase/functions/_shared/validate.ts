@@ -24,6 +24,13 @@ export function bool(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+/** Bounded integer. Anything unparseable becomes `fallback`. */
+export function int(value: unknown, min: number, max: number, fallback = min): number {
+  const n = typeof value === 'number' ? value : parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
 export function strList(value: unknown, maxItems = 25, maxLength = 200): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((v) => str(v, maxLength)).filter(Boolean).slice(0, maxItems);

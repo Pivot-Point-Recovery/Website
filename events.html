@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Events — Pivot Point Recovery</title>
+  <meta name="description" content="Upcoming Pivot Point Recovery events across Northern Virginia — open mic nights, community gatherings, and recovery events. Everyone is welcome.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Palanquin:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <nav class="nav scrolled" id="nav">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">
+        <img class="nav-logo-img nav-logo-white" src="/logo-white.svg" alt="Pivot Point Recovery">
+        <img class="nav-logo-img nav-logo-teal" src="/logo-color.svg" alt="Pivot Point Recovery">
+      </a>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation"><span></span><span></span><span></span></button>
+      <ul class="nav-links" id="navLinks">
+        <li><a href="/">Home</a></li>
+        <li><a href="/about">Our Story</a></li>
+        <li><a href="/services">Services</a></li>
+        <li><a href="/resources" class="nav-resources">Find Local Resources</a></li>
+        <li><a href="/events" class="active">Events</a></li>
+        <li><a href="/get-involved">Get Involved</a></li>
+        <li><a href="/volunteer" class="nav-volunteer">Volunteer</a></li>
+        <li><a href="/donate" class="nav-donate">Donate</a></li>
+        <li><a href="/contact" class="nav-cta">Contact Us</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <section class="page-hero">
+    <div class="page-hero-bg">
+      <img src="https://images.pexels.com/photos/7176305/pexels-photo-7176305.jpeg?auto=compress&cs=tinysrgb&w=1920" alt="People gathered together at a community recovery event" loading="eager">
+      <div class="page-hero-overlay"></div>
+    </div>
+    <div class="container">
+      <p class="section-label">Events</p>
+      <h1 class="section-title">Come As You Are</h1>
+      <p>Recovery is built in rooms full of people. Here's where we'll be next — everyone is welcome, whether you're in recovery, supporting someone who is, or just curious.</p>
+    </div>
+  </section>
+
+  <section class="content-section">
+    <div class="container">
+      <div class="section-header center">
+        <p class="section-label">What's Coming Up</p>
+        <h2 class="section-title">Upcoming Events</h2>
+      </div>
+
+      <div id="eventsLoading">
+        <p style="text-align:center;color:var(--color-text-mid)">Loading events…</p>
+      </div>
+
+      <div class="involve-cards" id="upcomingEvents" style="display:none"></div>
+
+      <div id="eventsEmpty" style="display:none;text-align:center">
+        <p style="color:var(--color-text-mid)">We don't have anything on the calendar just now. New events are posted here as soon as they're set — or <a href="/contact">get in touch</a> and we'll let you know what's next.</p>
+      </div>
+
+      <div id="eventsError" style="display:none;text-align:center">
+        <p style="color:var(--color-text-mid)">We couldn't load the calendar just now. Please refresh, or <a href="/contact">contact us</a> and we'll tell you what's coming up.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="content-section alt" id="pastSection" style="display:none">
+    <div class="container">
+      <div class="section-header center">
+        <p class="section-label">Recently</p>
+        <h2 class="section-title">Past Events</h2>
+      </div>
+      <div class="involve-cards" id="pastEvents"></div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <div class="container">
+      <div class="cta-banner">
+        <img src="https://images.pexels.com/photos/6129493/pexels-photo-6129493.jpeg?auto=compress&cs=tinysrgb&w=1920" alt="" class="cta-bg-img" loading="lazy">
+        <div class="cta-overlay"></div>
+        <div class="cta-content">
+          <h2>Want to Help Put One On?</h2>
+          <p>Our events run on volunteers — setting up, greeting people at the door, and making sure nobody stands alone in a corner.</p>
+          <div class="cta-actions">
+            <a href="/volunteer" class="btn btn-primary btn-large">Volunteer</a>
+            <a href="/donate" class="btn btn-ghost btn-large">Donate</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="/" class="footer-logo-link">
+            <img class="footer-logo-img" src="/logo-white.svg" alt="Pivot Point Recovery">
+          </a>
+          <p>Building a compassionate, recovery-centered community in Northern Virginia.</p>
+          <p class="footer-org-type">501(c)(3) Nonprofit Organization</p>
+        </div>
+        <div class="footer-col">
+          <h4>Navigate</h4>
+          <ul><li><a href="/">Home</a></li><li><a href="/about">Our Story</a></li><li><a href="/services">Services</a></li><li><a href="/resources">Resources</a></li><li><a href="/events">Events</a></li><li><a href="/get-involved">Get Involved</a></li><li><a href="/contact">Contact Us</a></li><li><a href="/portal">PPR Login</a></li></ul>
+        </div>
+        <div class="footer-col">
+          <h4>Crisis Resources</h4>
+          <ul><li><a href="tel:988">988 Suicide &amp; Crisis Lifeline</a></li><li><a href="tel:18006624357">SAMHSA: 1-800-662-4357</a></li></ul>
+        </div>
+        <div class="footer-col">
+          <h4>Connect</h4>
+          <p>Northern Virginia</p>
+          <a href="/contact" class="btn btn-outline btn-small">Send a Message</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2025 Pivot Point Recovery. All rights reserved.</p>
+        <p class="photo-credit">Photos by <a href="https://www.pexels.com" target="_blank" rel="noopener">Pexels</a></p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/main.js"></script>
+  <script src="/events.js"></script>
+  <script>
+    function eventCard(ev, past) {
+      const href = eventHref(ev);
+      const when = formatWhen(ev);
+      const where = [ev.location_name, ev.city].filter(Boolean).join(' · ');
+      const image = safeImageUrl(ev.image_url);
+
+      return '<div class="involve-card">' +
+        (image
+          ? '<div style="margin:-2.5rem -2.5rem 1.5rem;height:180px;overflow:hidden">' +
+            '<img src="' + esc(image) + '" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover">' +
+            '</div>'
+          : '') +
+        (when ? '<p class="section-label" style="margin-bottom:.5rem">' + esc(when) + '</p>' : '') +
+        '<h3>' + esc(ev.title || 'Event') + '</h3>' +
+        (ev.tagline ? '<p style="font-weight:600;color:var(--color-blue);margin-bottom:.75rem">' + esc(ev.tagline) + '</p>' : '') +
+        (ev.summary ? '<p>' + esc(ev.summary) + '</p>' : '') +
+        (where ? '<p style="font-size:.9rem">' + esc(where) + '</p>' : '') +
+        (past
+          ? ''
+          : '<a href="' + esc(href) + '" class="btn btn-blue btn-small">' +
+            (ev.rsvp_enabled === false ? 'Event details' : 'Details &amp; RSVP') + '</a>') +
+        '</div>';
+    }
+
+    function centreIfSingle(el, count) {
+      if (count !== 1) return;
+      el.style.maxWidth = '460px';
+      el.style.margin = '2rem auto 0';
+    }
+
+    (async function () {
+      const loading = document.getElementById('eventsLoading');
+      const upcomingEl = document.getElementById('upcomingEvents');
+      const pastEl = document.getElementById('pastEvents');
+
+      try {
+        const events = await fetchEvents();
+        loading.style.display = 'none';
+
+        const upcoming = events.filter(function (ev) { return !isPast(ev); });
+        // Most recent first: a visitor scanning what they missed cares about
+        // last month before last year.
+        const past = events.filter(isPast).reverse();
+
+        if (upcoming.length) {
+          upcomingEl.innerHTML = upcoming.map(function (ev) { return eventCard(ev, false); }).join('');
+          upcomingEl.style.display = 'grid';
+          // The shared card grid stretches a lone card across the full width,
+          // which reads as a layout mistake rather than as one event.
+          centreIfSingle(upcomingEl, upcoming.length);
+        } else {
+          document.getElementById('eventsEmpty').style.display = 'block';
+        }
+
+        if (past.length) {
+          const shown = past.slice(0, 6);
+          pastEl.innerHTML = shown.map(function (ev) { return eventCard(ev, true); }).join('');
+          centreIfSingle(pastEl, shown.length);
+          document.getElementById('pastSection').style.display = 'block';
+        }
+      } catch (err) {
+        loading.style.display = 'none';
+        document.getElementById('eventsError').style.display = 'block';
+      }
+    })();
+  </script>
+</body>
+</html>
