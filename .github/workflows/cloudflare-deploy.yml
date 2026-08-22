@@ -120,8 +120,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _site
-          cp *.html styles.css main.js *.svg veteran.jpeg _headers _site/
+          # *.js rather than a named list: events.js joined main.js when the
+          # events pages landed, and a file missed here 404s in production while
+          # every local check passes.
+          cp *.html *.css *.js *.svg veteran.jpeg _headers _site/
           echo "staged:"; ls -1 _site
+          # The pages that read the events table are inert without events.js.
+          for required in index.html events.html event.html openmic.html admin.html styles.css main.js events.js _headers; do
+            [ -f "_site/$required" ] || { echo "::error::$required missing from the deploy payload"; exit 1; }
+          done
 
       - name: Create Pages project if it does not exist
         env:
