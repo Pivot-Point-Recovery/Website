@@ -67,9 +67,15 @@ async function recipients(audience: Audience): Promise<string[]> {
   // Table first, so the address a human most recently added leads the list --
   // it is also what a donor's reply-to points at. Case-insensitive dedupe, so
   // Steve@ and steve@ cannot both be present and send everything twice.
+  return dedupe([...fromTable, ...secretRecipients()]);
+}
+
+/** Trim, drop blanks, and remove case-insensitive duplicates, keeping order.
+ *  Steve@ and steve@ are one person and must not be mailed twice. */
+function dedupe(addresses: string[]): string[] {
   const seen = new Set<string>();
-  return [...fromTable, ...secretRecipients()]
-    .map((address) => address.trim())
+  return addresses
+    .map((address) => String(address ?? '').trim())
     .filter(Boolean)
     .filter((address) => {
       const key = address.toLowerCase();
@@ -152,9 +158,15 @@ export async function recipientCount(audience: Audience = 'forms'): Promise<numb
 export async function sendNotification(
   subject: string,
   rows: Array<[string, string]>,
-  opts: { replyTo?: string; intro?: string; audience?: Audience } = {},
+  opts: { replyTo?: string; intro?: string; audience?: Audience; to?: string[] } = {},
 ): Promise<NotifyResult> {
-  const to = await recipients(opts.audience ?? 'forms');
+  // An explicit `to` addresses one named person rather than the standing staff
+  // list -- an event's own organiser, who is chosen per event at /admin and is
+  // not necessarily whoever works enquiries. It falls back to the audience list
+  // when it yields nothing, so a blank or mistyped organiser address degrades
+  // to "someone was told" rather than to silence.
+  const explicit = dedupe(opts.to ?? []);
+  const to = explicit.length > 0 ? explicit : await recipients(opts.audience ?? 'forms');
   if (to.length === 0) {
     return { notified: false, reason: 'no recipients (table empty and NOTIFICATION_EMAILS unset)' };
   }

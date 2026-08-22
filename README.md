@@ -20,9 +20,13 @@ and donation processing live in the separate `nonprofitportal` application.
 | `/volunteer` | `volunteer.html` | Volunteer interest form |
 | `/donate` | `donate.html` | Giving page → Stripe Checkout |
 | `/contact` | `contact.html` | Contact form |
+| `/events` | `events.html` | Event calendar, read from the database |
+| `/event?slug=…` | `event.html` | Generic event page, rendered from the database |
+| `/openmic` | `openmic.html` | Open Mike Night — hand-built, because a printed flyer's QR code points here |
+| `/admin` | `admin.html` | Staff event editor (`noindex`, password) |
 
-Shared assets: `styles.css`, `main.js`, `logo-color.svg`, `logo-white.svg`,
-`favicon.svg`, `veteran.jpeg`.
+Shared assets: `styles.css`, `main.js`, `events.js`, `logo-color.svg`,
+`logo-white.svg`, `favicon.svg`, `veteran.jpeg`.
 
 ## Design system
 
@@ -39,7 +43,7 @@ Reuse the existing classes rather than adding new ones where possible:
 
 ## Forms
 
-Both public forms POST to the same Supabase edge function, which validates the
+All three public forms POST to the same Supabase edge function, which validates the
 payload, writes it to the database with the service role, and emails staff via
 Resend. The function answers preflight with an explicit origin allowlist —
 `pivotpointrecovery.org`, `www.pivotpointrecovery.org`, any `*.pages.dev`
@@ -53,9 +57,16 @@ https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/public-forms
 | --- | --- | --- |
 | Contact | `contact` | `contact_submissions` |
 | Volunteer | `volunteer` | `volunteer_interests` |
+| Event RSVP | `event_rsvp` | `event_rsvps` |
 
-Both include an off-screen honeypot field (`_honeypot`); the function silently
-accepts and drops any submission that fills it.
+An RSVP is the one form whose recipient is not the standing staff list. The
+browser sends only `event_slug`; the function looks the event up and mails
+whoever `events.rsvp_email` names, falling back to
+`steve@pivotpointrecovery.org`. A payload cannot nominate its own recipient,
+and an event that is unpublished or has `rsvp_enabled = false` is refused.
+
+All three include an off-screen honeypot field (`_honeypot`); the function
+silently accepts and drops any submission that fills it.
 
 ### Who receives the notification emails
 
@@ -160,6 +171,72 @@ curl -s -X POST https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/public-for
 
 `notified` must come back `true`.
 
+## Events
+
+Events are **data, not markup**. They live in the `events` table and are edited
+at `/admin` by staff, because the calendar changes weekly and the person who
+knows the next date does not edit HTML.
+
+| Page | Reads |
+| --- | --- |
+| `/events` | Every published event, split into upcoming and past |
+| `/event?slug=…` | One published event, rendered from its row |
+| `/openmic` | Nothing — hand-built HTML |
+
+`/events` and `/event` read PostgREST directly with the **publishable** key,
+which is meant to sit in a page: RLS exposes only rows where `published` is
+true, and `event_rsvps` is not readable with it at all. No SDK and no build
+step — `events.js` is plain `fetch`, so the CSP needs no third-party script
+host.
+
+Times are formatted in `America/New_York` rather than the visitor's timezone.
+Every event is in Northern Virginia, so a visitor in Denver needs to know when
+to turn up at the venue, not what their own clock will say.
+
+### Two ways an event can have a page
+
+Most events use the generic `/event?slug=…` template. An event with its own
+hand-built page sets `detail_url`, and the events list links there instead —
+which is why Open Mike Night has both a row in the table *and* `openmic.html`:
+a printed flyer's QR code points at `/openmic`, so that URL must work without
+depending on JavaScript or a database read.
+
+### /admin — the no-code editor
+
+`/admin` is a single page with no dependencies. Sign in with email and
+password; add, edit, publish, unpublish and delete events; read the guest list
+for any event and download it as a spreadsheet; change your own password.
+
+Authorisation is **not** decided in the browser. Any account can load the page
+— only an address in `event_editors` can read drafts or write anything, and
+RLS enforces that in the database:
+
+```sql
+-- Let someone edit events
+insert into public.event_editors (email, label)
+values ('someone@example.org', 'Their name')
+on conflict (lower(email)) do update set active = true;
+
+-- Revoke, without losing the record that they had access
+update public.event_editors set active = false where email = '…';
+```
+
+Signing in is not sufficient, and that is the point: `is_event_editor()` reads
+the JWT's email claim and checks it against that table on every statement.
+
+> **A PostgREST trap worth knowing.** An `UPDATE` or `DELETE` that RLS filters
+> to zero rows answers **204, no error** — indistinguishable from success. A
+> revoked editor would have been told "Saved" while nothing was written. Every
+> write in `admin.html` therefore goes through `writeRows()`, which sends
+> `Prefer: return=representation` and treats an empty array as the failure it
+> is. If you add a write path, use that helper.
+
+Event copy is rendered as **escaped text, never markup** — `esc()` in
+`events.js` — so a non-technical editor cannot put HTML on a public page by
+accident. Image URLs are refused unless they start with `https://`; the CSP's
+`img-src` is `https:` rather than a host list precisely because an editor
+pastes those URLs and they cannot be enumerated in advance.
+
 ## Donations
 
 `donate.html` collects the amount and donor details, then POSTs to the site's
@@ -245,10 +322,11 @@ deploy is reproducible and reviewable:
 supabase/
   config.toml
   migrations/            schema, applied in filename order
-                         (incl. notification_recipients)
+                         (incl. notification_recipients, events,
+                          event_rsvps, event_editors)
   functions/
     _shared/             http (CORS), db, env, validate, notify, stripe
-    public-forms/        contact + volunteer
+    public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
     donations-webhook/   confirms gifts, sends receipts
 ```
@@ -265,6 +343,12 @@ supabase functions deploy donations-webhook  --no-verify-jwt
 
 `--no-verify-jwt` is required: these are public endpoints called by anonymous
 visitors and by Stripe, neither of which carries a Supabase JWT.
+
+> The events schema, its seed row, and the `public-forms` function carrying the
+> `event_rsvp` handler were applied to the live project on 2026-08-22 and
+> verified end to end: `{"ok":true,"notified":true}` for an RSVP, contact still
+> working, anon blocked from `event_rsvps`, and a de-listed editor blocked from
+> every write.
 
 ### Secrets
 
@@ -314,6 +398,11 @@ page is a real charge.
 
 Cloudflare Pages, served from the repository root. `_headers` sets the security
 and CSP policy; extend the CSP there if you add a new external asset host.
+
+`img-src` is `https:` rather than a host allowlist because event photos are
+pasted in at `/admin` by a non-technical editor, so their hosts cannot be known
+in advance. `events.js` refuses any image URL that is not `https://`, which is
+what keeps `data:`/`javascript:` URIs out of an attribute.
 
 > **Error 1000 outage: resolved (verified 2026-08-20).** `https://pivotpointrecovery.org/`
 > and `/donate` both return `200`. The apex no longer resolves to Cloudflare's

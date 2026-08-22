@@ -1,4 +1,4 @@
-// Public contact + volunteer form handler.
+// Public contact + volunteer + event RSVP handler.
 //
 // Wire-compatible with the payloads contact.html and volunteer.html already
 // send. Saves with the service role, then notifies staff via Resend.
@@ -11,7 +11,13 @@ import { fail, json, preflight } from '../_shared/http.ts';
 import { serviceClient } from '../_shared/db.ts';
 import { recipientCount, sendNotification } from '../_shared/notify.ts';
 import { healthReport } from '../_shared/env.ts';
-import { email as parseEmail, str, strList } from '../_shared/validate.ts';
+import { email as parseEmail, int, str, strList } from '../_shared/validate.ts';
+
+// Where an event RSVP goes when the event row does not name an organiser.
+// Events created at /admin carry their own rsvp_email; this is the floor, so a
+// missing one routes to the person who runs events rather than to the general
+// enquiries list.
+const DEFAULT_RSVP_RECIPIENT = 'steve@pivotpointrecovery.org';
 
 const REQUIRED_SECRETS = ['RESEND_API_KEY'];
 // NOTIFICATION_EMAILS is no longer required: recipients can come from the
@@ -159,6 +165,96 @@ Deno.serve(async (req) => {
       await db.from('volunteer_interests').update({ notified: true }).eq('id', data.id);
     } else {
       console.warn('volunteer_not_notified', result.reason);
+    }
+
+    return json(req, { ok: true, notified: result.notified });
+  }
+
+  if (formType === 'event_rsvp') {
+    const slug = str(payload.event_slug, 120).toLowerCase();
+    const name = str(payload.name, 200);
+    const email = parseEmail(payload.email);
+    if (!slug) return fail(req, 'Missing event.');
+    if (!name) return fail(req, 'Please enter your name.');
+    if (!email) return fail(req, 'Please enter a valid email address.');
+
+    // The event decides whether it is still taking RSVPs and who hears about
+    // them -- never the browser. A payload cannot nominate its own recipient.
+    const { data: event, error: eventError } = await db
+      .from('events')
+      .select('id, slug, title, starts_at, rsvp_enabled, rsvp_email, published')
+      .eq('slug', slug)
+      .maybeSingle();
+
+    if (eventError) {
+      console.error('event_lookup_failed', eventError);
+      return fail(req, 'We could not take your RSVP just now. Please try again.', 500);
+    }
+    if (!event || !event.published) return fail(req, 'We could not find that event.', 404);
+    if (event.rsvp_enabled === false) {
+      return fail(req, 'RSVPs for this event are closed. Please contact us instead.');
+    }
+
+    const record = {
+      event_id: event.id,
+      event_slug: event.slug,
+      event_title: event.title,
+      name,
+      email,
+      phone: str(payload.phone, 40),
+      party_size: int(payload.party_size, 1, 20, 1),
+      participation: str(payload.participation, 40),
+      act_type: strList(payload.act_type, 10, 60),
+      notes: str(payload.notes, 5000),
+      source: 'website',
+      user_agent: userAgent,
+    };
+
+    const { data, error } = await db
+      .from('event_rsvps')
+      .insert(record)
+      .select('id')
+      .single();
+
+    if (error) {
+      console.error('event_rsvp_insert_failed', error);
+      return fail(req, 'We could not save your RSVP. Please try again.', 500);
+    }
+
+    const partyLabel = record.party_size === 1
+      ? 'Just them'
+      : `${record.party_size} people (including them)`;
+    const participationLabel = record.participation === 'perform'
+      ? 'Wants to perform'
+      : record.participation === 'listen'
+      ? 'Coming to watch and listen'
+      : record.participation === 'undecided'
+      ? 'Undecided about performing'
+      : record.participation;
+
+    const result = await sendNotification(
+      `New RSVP: ${event.title}`,
+      [
+        ['Event', event.title],
+        ['Name', record.name],
+        ['Email', record.email],
+        ['Phone', record.phone],
+        ['Party size', partyLabel],
+        ['Taking part', participationLabel],
+        ['Would perform', record.act_type.join(', ')],
+        ['Notes', record.notes],
+      ],
+      {
+        replyTo: record.email,
+        intro: `${record.name} RSVP'd for ${event.title}.`,
+        to: [str(event.rsvp_email, 254) || DEFAULT_RSVP_RECIPIENT],
+      },
+    );
+
+    if (result.notified) {
+      await db.from('event_rsvps').update({ notified: true }).eq('id', data.id);
+    } else {
+      console.warn('event_rsvp_not_notified', result.reason);
     }
 
     return json(req, { ok: true, notified: result.notified });

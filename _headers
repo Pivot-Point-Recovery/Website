@@ -8,8 +8,15 @@
 # CSP allowances and why each is needed:
 #   style-src  fonts.googleapis.com  — Google Fonts stylesheet
 #   font-src   fonts.gstatic.com     — the font files themselves
-#   img-src    images.pexels.com     — hero / CTA photography
-#   connect-src *.supabase.co        — public-forms edge function (contact + volunteer)
+#   img-src    https:                — hero / CTA photography (images.pexels.com) plus
+#                                      event photos, whose URLs are pasted in at /admin by
+#                                      a non-technical editor and so cannot be enumerated
+#                                      here. Narrowed to https, and events.js refuses any
+#                                      URL that is not https, so no data:/javascript: URI
+#                                      reaches an attribute.
+#   connect-src *.supabase.co        — public-forms edge function (contact, volunteer,
+#                                      event RSVP) plus Supabase Auth and the events table
+#                                      read by /events, /event and /admin
 #   'unsafe-inline'                  — the page-level <script>/<style> blocks in each HTML file
 
 /*
@@ -19,4 +26,4 @@
   X-XSS-Protection: 1; mode=block
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(self)
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https://images.pexels.com; connect-src 'self' https://*.supabase.co; frame-ancestors 'none'; object-src 'none'; base-uri 'self';
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co; frame-ancestors 'none'; object-src 'none'; base-uri 'self';
