@@ -22,7 +22,7 @@ and donation processing live in the separate `nonprofitportal` application.
 | `/contact` | `contact.html` | Contact form |
 | `/events` | `events.html` | Event calendar, read from the database |
 | `/event?slug=…` | `event.html` | Generic event page, rendered from the database |
-| `/openmic` | `openmic.html` | Open Mike Night — hand-built, because a printed flyer's QR code points here |
+| `/openmic` | `openmic.html` | Open Mic Night — hand-built, because a printed flyer's QR code points here |
 | `/admin` | `admin.html` | Staff event editor (`noindex`, password) |
 
 Shared assets: `styles.css`, `main.js`, `events.js`, `logo-color.svg`,
@@ -197,7 +197,7 @@ to turn up at the venue, not what their own clock will say.
 
 Most events use the generic `/event?slug=…` template. An event with its own
 hand-built page sets `detail_url`, and the events list links there instead —
-which is why Open Mike Night has both a row in the table *and* `openmic.html`:
+which is why Open Mic Night has both a row in the table *and* `openmic.html`:
 a printed flyer's QR code points at `/openmic`, so that URL must work without
 depending on JavaScript or a database read.
 
