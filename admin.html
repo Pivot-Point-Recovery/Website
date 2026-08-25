@@ -3,725 +3,247 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Event Admin — Pivot Point Recovery</title>
+  <title>Board Center — Pivot Point Recovery</title>
   <meta name="robots" content="noindex, nofollow">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Palanquin:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/board-center.css">
   <style>
-    /* Admin-only layout. Everything else reuses the public site's classes so
-       the editor looks like the site it edits. */
-    .admin-wrap { max-width: 960px; margin: 0 auto; padding: 100px 1.5rem 4rem; }
-    .admin-bar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;
-                 padding: 1rem 1.25rem; background: var(--color-offwhite); border: 1px solid var(--color-border);
-                 border-radius: var(--radius); margin-bottom: 2rem; }
-    .admin-bar p { margin: 0; color: var(--color-text-mid); font-size: .92rem; }
+    /* Carried over from the original event editor so its markup keeps working
+       unchanged inside the new shell. */
     .admin-card { background: var(--color-white); border: 1px solid var(--color-border); border-radius: var(--radius);
-                  padding: 1.5rem; margin-bottom: 1rem; }
+                  padding: 1.35rem 1.5rem; margin-bottom: 1rem; box-shadow: var(--bc-shadow); }
     .admin-card h3 { font-family: var(--font-display); text-transform: uppercase; color: var(--color-navy);
-                     font-size: 1.15rem; margin: 0 0 .35rem; }
-    .admin-meta { color: var(--color-text-mid); font-size: .9rem; margin: 0 0 .75rem; }
+                     font-size: 1.1rem; margin: 0 0 .3rem; }
+    .admin-meta { color: var(--color-text-mid); font-size: .88rem; margin: 0 0 .75rem; }
     .admin-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-    .admin-pill { display: inline-block; font-size: .72rem; font-weight: 700; text-transform: uppercase;
-                  letter-spacing: .04em; padding: .2rem .55rem; border-radius: 999px; margin-left: .5rem; vertical-align: middle; }
-    .admin-pill.live { background: #e6f4ea; color: #1e7a3c; }
-    .admin-pill.draft { background: #fdf1dc; color: #8a5a00; }
-    .admin-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
-    .admin-table th, .admin-table td { text-align: left; padding: .6rem .5rem; border-bottom: 1px solid var(--color-border);
-                                       vertical-align: top; }
-    .admin-table th { font-family: var(--font-display); text-transform: uppercase; color: var(--color-navy); font-size: .8rem; }
+    .admin-pill { display: inline-block; font-size: .7rem; font-weight: 700; text-transform: uppercase;
+                  letter-spacing: .04em; padding: .18rem .5rem; border-radius: 999px; margin-left: .5rem;
+                  vertical-align: middle; }
+    .admin-pill.live { background: var(--bc-ok-bg); color: var(--bc-ok-fg); }
+    .admin-pill.draft { background: var(--bc-warn-bg); color: var(--bc-warn-fg); }
+    .admin-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .admin-table th, .admin-table td { text-align: left; padding: .55rem .5rem;
+                                       border-bottom: 1px solid var(--color-light); vertical-align: top; }
+    .admin-table th { font-family: var(--font-display); text-transform: uppercase;
+                      color: var(--color-navy); font-size: .78rem; }
     .admin-scroll { overflow-x: auto; }
-    .admin-login { max-width: 420px; margin: 0 auto; }
     .admin-danger { color: #b42318; }
+    .admin-login { max-width: 420px; margin: 0 auto; padding: 100px 1.5rem 4rem; }
   </style>
 </head>
 <body>
-  <nav class="nav scrolled" id="nav">
-    <div class="nav-inner">
-      <a href="/" class="nav-logo">
-        <img class="nav-logo-img nav-logo-white" src="/logo-white.svg" alt="Pivot Point Recovery">
-        <img class="nav-logo-img nav-logo-teal" src="/logo-color.svg" alt="Pivot Point Recovery">
-      </a>
+  <!-- ---------------------------------------------------------------- login -->
+  <section id="loginView">
+    <nav class="nav scrolled">
+      <div class="nav-inner">
+        <a href="/" class="nav-logo">
+          <img class="nav-logo-img nav-logo-white" src="/logo-white.svg" alt="Pivot Point Recovery">
+          <img class="nav-logo-img nav-logo-teal" src="/logo-color.svg" alt="Pivot Point Recovery">
+        </a>
+      </div>
+    </nav>
+    <div class="admin-login">
+      <div class="section-header">
+        <p class="section-label">Staff &amp; Board</p>
+        <h1 class="section-title">Board Center</h1>
+        <p>Sign in to work enquiries, volunteers and events, and to see how the organisation is doing.</p>
+      </div>
+      <div class="contact-form">
+        <form id="loginForm" novalidate>
+          <div class="form-group">
+            <label for="loginEmail">Email</label>
+            <input type="email" id="loginEmail" autocomplete="username" placeholder="you@example.com">
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Password</label>
+            <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Your password">
+          </div>
+          <button type="submit" class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center">Sign In</button>
+          <p class="form-note" id="loginNote">Trouble signing in? Contact the office and we'll sort it out.</p>
+        </form>
+      </div>
     </div>
-  </nav>
+  </section>
 
-  <div class="admin-wrap">
-    <!-- ------------------------------------------------------------ login -->
-    <section id="loginView">
-      <div class="admin-login">
-        <div class="section-header">
-          <p class="section-label">Staff Only</p>
-          <h1 class="section-title">Event Admin</h1>
-          <p>Sign in to add and edit the events that appear on the website.</p>
+  <!-- ------------------------------------------------------------------ app -->
+  <section id="appView" hidden>
+    <div class="bc-shell">
+      <aside class="bc-side">
+        <div class="bc-brand">
+          <div class="t"><b>Board Center</b><span>Pivot Point Recovery</span></div>
         </div>
-        <div class="contact-form">
-          <form id="loginForm" novalidate>
-            <div class="form-group">
-              <label for="loginEmail">Email</label>
-              <input type="email" id="loginEmail" autocomplete="username" placeholder="you@example.com">
-            </div>
-            <div class="form-group">
-              <label for="loginPassword">Password</label>
-              <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Your password">
-            </div>
-            <button type="submit" class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center">Sign In</button>
-            <p class="form-note" id="loginNote">Trouble signing in? Contact the office and we'll sort it out.</p>
-          </form>
-        </div>
-      </div>
-    </section>
+        <nav class="bc-nav" id="bcNav" aria-label="Sections"></nav>
+      </aside>
 
-    <!-- -------------------------------------------------------------- app -->
-    <section id="appView" hidden>
-      <div class="admin-bar">
-        <p>Signed in as <strong id="whoami"></strong></p>
-        <div class="admin-actions">
-          <a class="btn btn-outline btn-small" href="/events" target="_blank" rel="noopener">View events page</a>
-          <button class="btn btn-outline btn-small" id="passwordToggle">Change password</button>
-          <button class="btn btn-ghost btn-small" id="signOutBtn">Sign out</button>
-        </div>
-      </div>
-
-      <div class="admin-card" id="passwordCard" hidden>
-        <h3>Change your password</h3>
-        <form id="passwordForm">
-          <div class="form-group">
-            <label for="newPassword">New password (at least 8 characters)</label>
-            <input type="password" id="newPassword" autocomplete="new-password">
+      <main class="bc-main">
+        <div class="bc-top">
+          <div class="bc-actions">
+            <a class="btn btn-outline btn-small" href="/events" target="_blank" rel="noopener">View the website</a>
+            <button class="btn btn-outline btn-small" id="passwordToggle">Change password</button>
+            <button class="btn btn-ghost btn-small" id="signOutBtn">Sign out</button>
           </div>
-          <button type="submit" class="btn btn-blue btn-small" id="passwordBtn">Save new password</button>
-        </form>
-      </div>
-
-      <div class="section-header" style="display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;flex-wrap:wrap">
-        <div>
-          <p class="section-label">Your Events</p>
-          <h2 class="section-title" style="margin:0">Events</h2>
-        </div>
-        <button class="btn btn-primary btn-small" id="newEventBtn">+ Add an event</button>
-      </div>
-
-      <div id="eventList" style="margin-top:1.5rem"></div>
-
-      <!-- ---------------------------------------------------------- editor -->
-      <div class="contact-form" id="editorCard" hidden style="margin-top:2rem">
-        <h2 class="section-title" id="editorTitle" style="margin-bottom:1.5rem">Add an event</h2>
-        <form id="eventForm" novalidate>
-          <div class="form-group">
-            <label for="fTitle">Event name <span class="required-star">*</span></label>
-            <input type="text" id="fTitle" placeholder="e.g. Open Mic Night">
-            <div class="form-error" id="fTitleError">Please give the event a name.</div>
-          </div>
-
-          <div class="form-group">
-            <label for="fTagline">Short tagline</label>
-            <input type="text" id="fTagline" placeholder="e.g. Share your voice. Inspire change. Build community.">
-            <p class="field-hint">One line, shown under the event name.</p>
-          </div>
-
-          <div class="form-group">
-            <label for="fSummary">Summary</label>
-            <textarea id="fSummary" rows="2" placeholder="A sentence or two for the events list."></textarea>
-          </div>
-
-          <div class="form-group">
-            <label for="fDescription">Full description</label>
-            <textarea id="fDescription" rows="7" placeholder="The details. Leave a blank line between paragraphs."></textarea>
-            <p class="field-hint">Plain text. Leave a blank line between paragraphs.</p>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="fDate">Date <span class="required-star">*</span></label>
-              <input type="date" id="fDate">
-              <div class="form-error" id="fDateError">Please choose a date.</div>
-            </div>
-            <div class="form-group">
-              <label for="fStart">Start time</label>
-              <input type="time" id="fStart" value="18:00">
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="fEnd">End time</label>
-              <input type="time" id="fEnd" value="21:00">
-            </div>
-            <div class="form-group">
-              <label for="fWhenText">Or describe the timing in words</label>
-              <input type="text" id="fWhenText" placeholder="e.g. Every third Thursday, 7pm">
-              <p class="field-hint">Fill this in only if the date and time boxes can't say it. It replaces them on the page.</p>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="fLocation">Venue name</label>
-            <input type="text" id="fLocation" placeholder="e.g. Ashburn Recreation and Community Center">
-          </div>
-
-          <div class="form-group">
-            <label for="fAddress">Street address</label>
-            <input type="text" id="fAddress" placeholder="e.g. 21105 Cooper's Hawk Drive">
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="fCity">City</label>
-              <input type="text" id="fCity" placeholder="Ashburn">
-            </div>
-            <div class="form-group">
-              <label for="fState">State</label>
-              <input type="text" id="fState" placeholder="VA" maxlength="2">
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label for="fPostal">ZIP</label>
-              <input type="text" id="fPostal" placeholder="20148" maxlength="10">
-            </div>
-            <div class="form-group">
-              <label for="fCost">Cost or extra detail</label>
-              <input type="text" id="fCost" placeholder="e.g. Free, or Open to the community">
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="fImage">Photo web address</label>
-            <input type="url" id="fImage" placeholder="https://images.pexels.com/photos/…">
-            <p class="field-hint">Optional. Paste a link to a photo that starts with https. Free photos: pexels.com — open a photo, right-click it and copy the image address.</p>
-          </div>
-
-          <div class="form-group">
-            <label class="check-option" style="font-weight:600">
-              <input type="checkbox" id="fRsvp" checked> Collect RSVPs for this event
-            </label>
-          </div>
-
-          <div class="form-group">
-            <label for="fRsvpEmail">Send RSVPs to</label>
-            <input type="email" id="fRsvpEmail" placeholder="steve@pivotpointrecovery.org">
-            <p class="field-hint">Whoever should get an email each time somebody RSVPs. Left blank, they go to steve@pivotpointrecovery.org.</p>
-          </div>
-
-          <div class="form-group">
-            <label class="check-option" style="font-weight:600">
-              <input type="checkbox" id="fPublished"> Published — show this on the website
-            </label>
-            <p class="field-hint">Leave unticked to keep working on it. Nothing appears publicly until this is ticked.</p>
-          </div>
-
-          <details style="margin-bottom:1.25rem">
-            <summary style="cursor:pointer;font-weight:600;color:var(--color-navy)">Advanced</summary>
-            <div class="form-group" style="margin-top:1rem">
-              <label for="fSlug">Web address name</label>
-              <input type="text" id="fSlug" placeholder="open-mic-night">
-              <p class="field-hint">Used in the link to this event. Filled in from the event name — only change it before you publish, because changing it later breaks existing links.</p>
-            </div>
-            <div class="form-group">
-              <label for="fDetailUrl">Custom page instead of the standard one</label>
-              <input type="text" id="fDetailUrl" placeholder="/openmic">
-              <p class="field-hint">Only for events with their own hand-built page. Leave blank otherwise.</p>
-            </div>
-          </details>
-
-          <div class="admin-actions">
-            <button type="submit" class="btn btn-primary" id="saveBtn">Save event</button>
-            <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
-          </div>
-        </form>
-      </div>
-
-      <!-- ------------------------------------------------------------ rsvps -->
-      <div class="admin-card" id="rsvpCard" hidden style="margin-top:2rem">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
-          <h3 id="rsvpTitle">RSVPs</h3>
-          <div class="admin-actions">
-            <button class="btn btn-outline btn-small" id="csvBtn">Download as spreadsheet</button>
-            <button class="btn btn-ghost btn-small" id="rsvpCloseBtn">Close</button>
+          <div class="bc-who">
+            <div class="bc-avatar" id="bcAvatar">··</div>
+            <div class="n"><b id="bcName">…</b><span id="bcRole"></span></div>
           </div>
         </div>
-        <p class="admin-meta" id="rsvpCount"></p>
-        <div class="admin-scroll"><table class="admin-table" id="rsvpTable"></table></div>
-      </div>
-    </section>
-  </div>
 
+        <div class="bc-content">
+          <div class="admin-card" id="passwordCard" hidden>
+            <h3>Change your password</h3>
+            <form id="passwordForm">
+              <div class="form-group">
+                <label for="newPassword">New password (at least 8 characters)</label>
+                <input type="password" id="newPassword" autocomplete="new-password">
+              </div>
+              <button type="submit" class="btn btn-blue btn-small" id="passwordBtn">Save new password</button>
+            </form>
+          </div>
+
+          <!-- Every view renders in here. -->
+          <div id="bcContent"></div>
+
+          <!-- The event editor and guest list live outside #bcContent so that
+               re-rendering a view cannot destroy a half-filled form. -->
+          <div class="contact-form" id="editorCard" hidden style="margin-top:.5rem">
+            <h2 class="section-title" id="editorTitle" style="margin-bottom:1.5rem">Add an event</h2>
+            <form id="eventForm" novalidate>
+              <div class="form-group">
+                <label for="fTitle">Event name <span class="required-star">*</span></label>
+                <input type="text" id="fTitle" placeholder="e.g. Open Mic Night">
+                <div class="form-error" id="fTitleError">Please give the event a name.</div>
+              </div>
+              <div class="form-group">
+                <label for="fTagline">Short tagline</label>
+                <input type="text" id="fTagline" placeholder="e.g. Share your voice. Inspire change. Build community.">
+                <p class="field-hint">One line, shown under the event name.</p>
+              </div>
+              <div class="form-group">
+                <label for="fSummary">Summary</label>
+                <textarea id="fSummary" rows="2" placeholder="A sentence or two for the events list."></textarea>
+              </div>
+              <div class="form-group">
+                <label for="fDescription">Full description</label>
+                <textarea id="fDescription" rows="7" placeholder="The details. Leave a blank line between paragraphs."></textarea>
+                <p class="field-hint">Plain text. Leave a blank line between paragraphs.</p>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="fDate">Date <span class="required-star">*</span></label>
+                  <input type="date" id="fDate">
+                  <div class="form-error" id="fDateError">Please choose a date.</div>
+                </div>
+                <div class="form-group">
+                  <label for="fStart">Start time</label>
+                  <input type="time" id="fStart" value="18:00">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="fEnd">End time</label>
+                  <input type="time" id="fEnd" value="21:00">
+                </div>
+                <div class="form-group">
+                  <label for="fWhenText">Or describe the timing in words</label>
+                  <input type="text" id="fWhenText" placeholder="e.g. Every third Thursday, 7pm">
+                  <p class="field-hint">Fill this in only if the date and time boxes can't say it. It replaces them on the page.</p>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="fLocation">Venue name</label>
+                <input type="text" id="fLocation" placeholder="e.g. Ashburn Recreation and Community Center">
+              </div>
+              <div class="form-group">
+                <label for="fAddress">Street address</label>
+                <input type="text" id="fAddress" placeholder="e.g. 21105 Cooper's Hawk Drive">
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="fCity">City</label>
+                  <input type="text" id="fCity" placeholder="Ashburn">
+                </div>
+                <div class="form-group">
+                  <label for="fState">State</label>
+                  <input type="text" id="fState" placeholder="VA" maxlength="2">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="fPostal">ZIP</label>
+                  <input type="text" id="fPostal" placeholder="20148" maxlength="10">
+                </div>
+                <div class="form-group">
+                  <label for="fCost">Cost or extra detail</label>
+                  <input type="text" id="fCost" placeholder="e.g. Free, or Open to the community">
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="fImage">Photo web address</label>
+                <input type="url" id="fImage" placeholder="https://images.pexels.com/photos/…">
+                <p class="field-hint">Optional. Paste a link to a photo that starts with https. Free photos: pexels.com — open a photo, right-click it and copy the image address.</p>
+              </div>
+              <div class="form-group">
+                <label class="check-option" style="font-weight:600">
+                  <input type="checkbox" id="fRsvp" checked> Collect RSVPs for this event
+                </label>
+              </div>
+              <div class="form-group">
+                <label for="fRsvpEmail">Send RSVPs to</label>
+                <input type="email" id="fRsvpEmail" placeholder="steve@pivotpointrecovery.org">
+                <p class="field-hint">Whoever should get an email each time somebody RSVPs. Left blank, they go to steve@pivotpointrecovery.org.</p>
+              </div>
+              <div class="form-group">
+                <label class="check-option" style="font-weight:600">
+                  <input type="checkbox" id="fPublished"> Published — show this on the website
+                </label>
+                <p class="field-hint">Leave unticked to keep working on it. Nothing appears publicly until this is ticked.</p>
+              </div>
+              <details style="margin-bottom:1.25rem">
+                <summary style="cursor:pointer;font-weight:600;color:var(--color-navy)">Advanced</summary>
+                <div class="form-group" style="margin-top:1rem">
+                  <label for="fSlug">Web address name</label>
+                  <input type="text" id="fSlug" placeholder="open-mic-night">
+                  <p class="field-hint">Used in the link to this event. Filled in from the event name — only change it before you publish, because changing it later breaks existing links.</p>
+                </div>
+                <div class="form-group">
+                  <label for="fDetailUrl">Custom page instead of the standard one</label>
+                  <input type="text" id="fDetailUrl" placeholder="/openmic">
+                  <p class="field-hint">Only for events with their own hand-built page. Leave blank otherwise.</p>
+                </div>
+              </details>
+              <div class="admin-actions">
+                <button type="submit" class="btn btn-primary" id="saveBtn">Save event</button>
+                <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="admin-card" id="rsvpCard" hidden style="margin-top:.5rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+              <h3 id="rsvpTitle">RSVPs</h3>
+              <div class="admin-actions">
+                <button class="btn btn-outline btn-small" id="csvBtn">Download as spreadsheet</button>
+                <button class="btn btn-ghost btn-small" id="rsvpCloseBtn">Close</button>
+              </div>
+            </div>
+            <p class="admin-meta" id="rsvpCount"></p>
+            <div class="admin-scroll"><table class="admin-table" id="rsvpTable"></table></div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <div class="bc-scrim" id="bcScrim"></div>
+  <aside class="bc-drawer" id="bcDrawer" aria-label="Record detail" aria-hidden="true"></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <!-- events.js supplies SUPABASE_URL, SUPABASE_KEY and EVENT_TZ. -->
   <script src="/events.js"></script>
-  <script>
-    // Supabase Auth + PostgREST over plain fetch. No SDK, so the site keeps its
-    // "no build step, no dependencies" shape and its CSP needs no script host.
-    //
-    // Authorisation is not decided here. Any signed-in account can load this
-    // page; only an address listed in event_editors can actually read drafts or
-    // write, which RLS enforces in the database. A client-side check would be
-    // decoration.
-    const AUTH = SUPABASE_URL + '/auth/v1';
-    const REST = SUPABASE_URL + '/rest/v1';
-    const SESSION_KEY = 'ppr_admin_session';
-
-    let session = null;
-    let events = [];
-    let editingId = null;
-    let rsvpRows = [];
-    let rsvpEventTitle = '';
-
-    function showToast(msg, type) {
-      const t = document.getElementById('toast');
-      t.textContent = msg;
-      t.className = 'toast ' + (type || 'success') + ' show';
-      setTimeout(function () { t.classList.remove('show'); }, 4500);
-    }
-
-    function loadSession() {
-      try {
-        const raw = localStorage.getItem(SESSION_KEY);
-        return raw ? JSON.parse(raw) : null;
-      } catch (err) { return null; }
-    }
-    function saveSession(s) {
-      session = s;
-      try {
-        if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-        else localStorage.removeItem(SESSION_KEY);
-      } catch (err) { /* private browsing: session lasts this tab only */ }
-    }
-
-    async function authFetch(path, opts) {
-      opts = opts || {};
-      const headers = Object.assign({
-        apikey: SUPABASE_KEY,
-        'Content-Type': 'application/json',
-      }, opts.headers || {});
-      if (session && session.access_token) headers.Authorization = 'Bearer ' + session.access_token;
-
-      let res = await fetch(path, Object.assign({}, opts, { headers: headers }));
-
-      // One transparent refresh, so a returning editor is not bounced to the
-      // login screen just because an hour passed.
-      if (res.status === 401 && session && session.refresh_token && !opts._retried) {
-        const refreshed = await refresh();
-        if (refreshed) return await authFetch(path, Object.assign({}, opts, { _retried: true }));
-      }
-      return res;
-    }
-
-    /** PostgREST answers an UPDATE or DELETE that RLS filtered out with 204 and
-     *  no rows -- indistinguishable from success unless the affected rows are
-     *  asked for. Without this, an editor whose access was revoked would be
-     *  told "Saved" while nothing was written. */
-    async function writeRows(path, method, body) {
-      const res = await authFetch(path, {
-        method: method,
-        headers: { Prefer: 'return=representation' },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const data = await res.json().catch(function () { return null; });
-      if (!res.ok) {
-        const err = data || {};
-        if (err.code === '23505') throw new Error('Another event already uses that web address name. Change it under Advanced.');
-        if (res.status === 401 || res.status === 403 || err.code === '42501') throw new Error(NOT_ALLOWED);
-        throw new Error(err.message || 'That did not save. Please try again.');
-      }
-      if (Array.isArray(data) && data.length === 0) throw new Error(NOT_ALLOWED);
-      return data;
-    }
-
-    const NOT_ALLOWED = 'Nothing was saved — your account is not on the list of people allowed to edit events. Ask the office to add you.';
-
-    async function refresh() {
-      try {
-        const res = await fetch(AUTH + '/token?grant_type=refresh_token', {
-          method: 'POST',
-          headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: session.refresh_token }),
-        });
-        if (!res.ok) { saveSession(null); return false; }
-        const data = await res.json();
-        saveSession({ access_token: data.access_token, refresh_token: data.refresh_token, email: (data.user && data.user.email) || session.email });
-        return true;
-      } catch (err) { return false; }
-    }
-
-    // ------------------------------------------------------------- sign in --
-    document.getElementById('loginForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      const email = document.getElementById('loginEmail').value.trim();
-      const password = document.getElementById('loginPassword').value;
-      const btn = document.getElementById('loginBtn');
-      if (!email || !password) { showToast('Enter your email and password.', 'error'); return; }
-
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> Signing in…';
-      try {
-        const res = await fetch(AUTH + '/token?grant_type=password', {
-          method: 'POST',
-          headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email, password: password }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error_description || data.msg || 'Could not sign in.');
-        saveSession({ access_token: data.access_token, refresh_token: data.refresh_token, email: data.user.email });
-        await start();
-      } catch (err) {
-        showToast(err.message || 'Could not sign in.', 'error');
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Sign In';
-      }
-    });
-
-    document.getElementById('signOutBtn').addEventListener('click', async function () {
-      try { await authFetch(AUTH + '/logout', { method: 'POST' }); } catch (err) { /* local sign-out either way */ }
-      saveSession(null);
-      location.reload();
-    });
-
-    document.getElementById('passwordToggle').addEventListener('click', function () {
-      const card = document.getElementById('passwordCard');
-      card.hidden = !card.hidden;
-    });
-
-    document.getElementById('passwordForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      const password = document.getElementById('newPassword').value;
-      if (password.length < 8) { showToast('Use at least 8 characters.', 'error'); return; }
-      const btn = document.getElementById('passwordBtn');
-      btn.disabled = true;
-      try {
-        const res = await authFetch(AUTH + '/user', { method: 'PUT', body: JSON.stringify({ password: password }) });
-        if (!res.ok) {
-          const data = await res.json().catch(function () { return {}; });
-          throw new Error(data.msg || data.error_description || 'Could not change the password.');
-        }
-        document.getElementById('newPassword').value = '';
-        document.getElementById('passwordCard').hidden = true;
-        showToast('Password changed.', 'success');
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally { btn.disabled = false; }
-    });
-
-    // -------------------------------------------------------------- events --
-    async function loadEvents() {
-      const res = await authFetch(REST + '/events?select=*&order=starts_at.desc');
-      if (!res.ok) throw new Error('Could not load your events.');
-      events = await res.json();
-      renderEvents();
-    }
-
-    function renderEvents() {
-      const list = document.getElementById('eventList');
-      if (!events.length) {
-        list.innerHTML = '<div class="admin-card"><p class="admin-meta" style="margin:0">' +
-          'No events yet. Choose <strong>Add an event</strong> to create the first one.</p></div>';
-        return;
-      }
-      list.innerHTML = events.map(function (ev) {
-        const when = formatWhen(ev) || 'Date not set';
-        const where = [ev.location_name, ev.city].filter(Boolean).join(' · ');
-        return '<div class="admin-card">' +
-          '<h3>' + esc(ev.title || 'Untitled') +
-            '<span class="admin-pill ' + (ev.published ? 'live' : 'draft') + '">' +
-            (ev.published ? 'Published' : 'Draft') + '</span></h3>' +
-          '<p class="admin-meta">' + esc(when) + (where ? ' — ' + esc(where) : '') + '</p>' +
-          '<div class="admin-actions">' +
-            '<button class="btn btn-blue btn-small" data-edit="' + esc(ev.id) + '">Edit</button>' +
-            '<button class="btn btn-outline btn-small" data-rsvps="' + esc(ev.id) + '">View RSVPs</button>' +
-            '<button class="btn btn-outline btn-small" data-publish="' + esc(ev.id) + '">' +
-              (ev.published ? 'Unpublish' : 'Publish') + '</button>' +
-            (ev.detail_url ? '' : '<a class="btn btn-ghost btn-small" href="/event?slug=' + encodeURIComponent(ev.slug || '') + '" target="_blank" rel="noopener">Preview</a>') +
-            '<button class="btn btn-ghost btn-small admin-danger" data-delete="' + esc(ev.id) + '">Delete</button>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-    }
-
-    document.getElementById('eventList').addEventListener('click', async function (e) {
-      const btn = e.target.closest('button');
-      if (!btn) return;
-      if (btn.dataset.edit) openEditor(btn.dataset.edit);
-      else if (btn.dataset.rsvps) showRsvps(btn.dataset.rsvps);
-      else if (btn.dataset.publish) togglePublished(btn.dataset.publish);
-      else if (btn.dataset.delete) deleteEvent(btn.dataset.delete);
-    });
-
-    function findEvent(id) {
-      return events.filter(function (ev) { return ev.id === id; })[0];
-    }
-
-    async function togglePublished(id) {
-      const ev = findEvent(id);
-      if (!ev) return;
-      if (!ev.published && !ev.slug) { showToast('Add a name and save before publishing.', 'error'); return; }
-      try {
-        await writeRows(REST + '/events?id=eq.' + encodeURIComponent(id), 'PATCH',
-          { published: !ev.published, updated_by: session.email });
-      } catch (err) {
-        showToast(err.message, 'error');
-        return;
-      }
-      showToast(ev.published ? 'Taken off the website.' : 'Published — it is live now.', 'success');
-      await loadEvents();
-    }
-
-    async function deleteEvent(id) {
-      const ev = findEvent(id);
-      if (!ev) return;
-      if (!confirm('Delete "' + (ev.title || 'this event') + '"? RSVPs already received are kept, but the event disappears from the website.')) return;
-      try {
-        await writeRows(REST + '/events?id=eq.' + encodeURIComponent(id), 'DELETE', null);
-      } catch (err) {
-        showToast(err.message, 'error');
-        return;
-      }
-      showToast('Event deleted.', 'success');
-      document.getElementById('editorCard').hidden = true;
-      await loadEvents();
-    }
-
-    // --------------------------------------------------------- the editor --
-    function slugify(text) {
-      return String(text || '').toLowerCase().trim()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .slice(0, 80);
-    }
-
-    /** Eastern Time offset for a given date, so "6pm" means 6pm at the venue
-     *  no matter which timezone the person filling this in happens to be in. */
-    function etOffset(dateStr) {
-      try {
-        const probe = new Date(dateStr + 'T12:00:00Z');
-        const label = new Intl.DateTimeFormat('en-US', {
-          timeZone: EVENT_TZ, timeZoneName: 'shortOffset',
-        }).format(probe);
-        const match = label.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-        if (match) {
-          const sign = match[1];
-          const hours = ('0' + match[2]).slice(-2);
-          const mins = match[3] || '00';
-          return sign + hours + ':' + mins;
-        }
-      } catch (err) { /* fall through to the DST rule below */ }
-      // US Eastern: DST runs from the second Sunday in March to the first
-      // Sunday in November.
-      const d = new Date(dateStr + 'T12:00:00Z');
-      const year = d.getUTCFullYear();
-      const march = new Date(Date.UTC(year, 2, 1));
-      const dstStart = new Date(Date.UTC(year, 2, 1 + ((7 - march.getUTCDay()) % 7) + 7));
-      const november = new Date(Date.UTC(year, 10, 1));
-      const dstEnd = new Date(Date.UTC(year, 10, 1 + ((7 - november.getUTCDay()) % 7)));
-      return (d >= dstStart && d < dstEnd) ? '-04:00' : '-05:00';
-    }
-
-    function timestampFor(dateStr, timeStr) {
-      if (!dateStr || !timeStr) return null;
-      return dateStr + 'T' + timeStr + ':00' + etOffset(dateStr);
-    }
-
-    /** A stored timestamp back into the date and time boxes, in venue time. */
-    function splitTimestamp(iso) {
-      if (!iso) return { date: '', time: '' };
-      const d = new Date(iso);
-      const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hour12: false,
-      }).formatToParts(d).reduce(function (acc, p) { acc[p.type] = p.value; return acc; }, {});
-      return {
-        date: parts.year + '-' + parts.month + '-' + parts.day,
-        time: (parts.hour === '24' ? '00' : parts.hour) + ':' + parts.minute,
-      };
-    }
-
-    const FIELDS = {
-      fTitle: 'title', fTagline: 'tagline', fSummary: 'summary', fDescription: 'description',
-      fWhenText: 'when_text', fLocation: 'location_name', fAddress: 'address', fCity: 'city',
-      fState: 'state', fPostal: 'postal_code', fCost: 'cost_text', fImage: 'image_url',
-      fSlug: 'slug', fDetailUrl: 'detail_url', fRsvpEmail: 'rsvp_email',
-    };
-
-    document.getElementById('newEventBtn').addEventListener('click', function () { openEditor(null); });
-    document.getElementById('cancelBtn').addEventListener('click', function () {
-      document.getElementById('editorCard').hidden = true;
-    });
-
-    // Keep the web address in step with the name until the event is published,
-    // after which changing it would break links already in circulation.
-    document.getElementById('fTitle').addEventListener('input', function () {
-      const ev = editingId ? findEvent(editingId) : null;
-      if (ev && ev.published) return;
-      document.getElementById('fSlug').value = slugify(this.value);
-    });
-
-    function openEditor(id) {
-      editingId = id;
-      const ev = id ? findEvent(id) : null;
-      document.getElementById('editorTitle').textContent = ev ? 'Edit event' : 'Add an event';
-
-      Object.keys(FIELDS).forEach(function (fieldId) {
-        document.getElementById(fieldId).value = ev ? (ev[FIELDS[fieldId]] || '') : '';
-      });
-
-      const start = splitTimestamp(ev && ev.starts_at);
-      const end = splitTimestamp(ev && ev.ends_at);
-      document.getElementById('fDate').value = start.date;
-      document.getElementById('fStart').value = start.time || '18:00';
-      document.getElementById('fEnd').value = end.time || '21:00';
-      document.getElementById('fRsvp').checked = ev ? ev.rsvp_enabled !== false : true;
-      document.getElementById('fPublished').checked = ev ? !!ev.published : false;
-      if (!ev) {
-        document.getElementById('fState').value = 'VA';
-        document.getElementById('fRsvpEmail').value = 'steve@pivotpointrecovery.org';
-      }
-
-      document.getElementById('editorCard').hidden = false;
-      document.getElementById('editorCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
-    document.getElementById('eventForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      const title = document.getElementById('fTitle').value.trim();
-      const date = document.getElementById('fDate').value;
-      const whenText = document.getElementById('fWhenText').value.trim();
-
-      let valid = true;
-      document.getElementById('fTitleError').classList.toggle('visible', !title);
-      if (!title) valid = false;
-      // A date is required unless the timing is described in words instead.
-      const needsDate = !date && !whenText;
-      document.getElementById('fDateError').classList.toggle('visible', needsDate);
-      if (needsDate) valid = false;
-      if (!valid) { showToast('Please fill in the highlighted fields.', 'error'); return; }
-
-      const slug = slugify(document.getElementById('fSlug').value || title);
-      const record = {
-        title: title,
-        slug: slug,
-        published: document.getElementById('fPublished').checked,
-        rsvp_enabled: document.getElementById('fRsvp').checked,
-        starts_at: timestampFor(date, document.getElementById('fStart').value),
-        ends_at: timestampFor(date, document.getElementById('fEnd').value),
-        updated_by: session.email,
-      };
-      Object.keys(FIELDS).forEach(function (fieldId) {
-        if (FIELDS[fieldId] === 'title' || FIELDS[fieldId] === 'slug') return;
-        record[FIELDS[fieldId]] = document.getElementById(fieldId).value.trim() || null;
-      });
-
-      const btn = document.getElementById('saveBtn');
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> Saving…';
-
-      try {
-        if (editingId) {
-          await writeRows(REST + '/events?id=eq.' + encodeURIComponent(editingId), 'PATCH', record);
-        } else {
-          record.created_by = session.email;
-          await writeRows(REST + '/events', 'POST', record);
-        }
-        showToast(record.published ? 'Saved and live on the website.' : 'Saved as a draft.', 'success');
-        document.getElementById('editorCard').hidden = true;
-        await loadEvents();
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Save event';
-      }
-    });
-
-    // --------------------------------------------------------------- rsvps --
-    async function showRsvps(id) {
-      const ev = findEvent(id);
-      if (!ev) return;
-      rsvpEventTitle = ev.title || 'Event';
-      const card = document.getElementById('rsvpCard');
-      document.getElementById('rsvpTitle').textContent = 'RSVPs — ' + rsvpEventTitle;
-      document.getElementById('rsvpCount').textContent = 'Loading…';
-      document.getElementById('rsvpTable').innerHTML = '';
-      card.hidden = false;
-      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-      const res = await authFetch(REST + '/event_rsvps?select=*&event_id=eq.' + encodeURIComponent(id) + '&order=created_at.desc');
-      if (!res.ok) {
-        document.getElementById('rsvpCount').textContent = 'Could not load the RSVPs for this event.';
-        return;
-      }
-      rsvpRows = await res.json();
-
-      const heads = ['Name', 'Email', 'Phone', 'People', 'Performing', 'Notes', 'Received'];
-      const guests = rsvpRows.reduce(function (sum, r) { return sum + (r.party_size || 1); }, 0);
-      document.getElementById('rsvpCount').textContent = rsvpRows.length
-        ? rsvpRows.length + (rsvpRows.length === 1 ? ' RSVP' : ' RSVPs') + ' · ' + guests + ' people expected'
-        : 'No RSVPs yet.';
-
-      document.getElementById('rsvpTable').innerHTML =
-        '<thead><tr>' + heads.map(function (h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead>' +
-        '<tbody>' + rsvpRows.map(function (r) {
-          const perform = r.participation === 'perform' ? 'Yes' : r.participation === 'undecided' ? 'Maybe' : 'No';
-          const acts = (r.act_type || []).join(', ');
-          return '<tr>' +
-            '<td>' + esc(r.name) + '</td>' +
-            '<td><a href="mailto:' + esc(r.email) + '">' + esc(r.email) + '</a></td>' +
-            '<td>' + esc(r.phone) + '</td>' +
-            '<td>' + esc(r.party_size || 1) + '</td>' +
-            '<td>' + esc(perform) + (acts ? ' (' + esc(acts) + ')' : '') + '</td>' +
-            '<td>' + esc(r.notes) + '</td>' +
-            '<td>' + esc(new Date(r.created_at).toLocaleDateString('en-US', { timeZone: EVENT_TZ })) + '</td>' +
-          '</tr>';
-        }).join('') + '</tbody>';
-    }
-
-    document.getElementById('rsvpCloseBtn').addEventListener('click', function () {
-      document.getElementById('rsvpCard').hidden = true;
-    });
-
-    document.getElementById('csvBtn').addEventListener('click', function () {
-      if (!rsvpRows.length) { showToast('There are no RSVPs to download yet.', 'error'); return; }
-      const cell = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
-      const csv = [['Name', 'Email', 'Phone', 'People', 'Performing', 'Would perform', 'Notes', 'Received'].map(cell).join(',')]
-        .concat(rsvpRows.map(function (r) {
-          return [r.name, r.email, r.phone, r.party_size || 1, r.participation,
-                  (r.act_type || []).join('; '), r.notes, r.created_at].map(cell).join(',');
-        })).join('\r\n');
-
-      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = slugify(rsvpEventTitle) + '-rsvps.csv';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
-    });
-
-    // ---------------------------------------------------------------- boot --
-    async function start() {
-      document.getElementById('loginView').hidden = true;
-      document.getElementById('appView').hidden = false;
-      document.getElementById('whoami').textContent = session.email || '';
-      try {
-        await loadEvents();
-      } catch (err) {
-        showToast(err.message || 'Could not load your events.', 'error');
-      }
-    }
-
-    (async function () {
-      session = loadSession();
-      if (!session) return;
-      const res = await authFetch(AUTH + '/user');
-      if (!res.ok) { saveSession(null); return; }
-      const user = await res.json();
-      saveSession(Object.assign({}, session, { email: user.email }));
-      await start();
-    })();
-  </script>
+  <script src="/board-center.js"></script>
 </body>
 </html>

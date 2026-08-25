@@ -201,35 +201,80 @@ which is why Open Mic Night has both a row in the table *and* `openmic.html`:
 a printed flyer's QR code points at `/openmic`, so that URL must work without
 depending on JavaScript or a database read.
 
-### /admin — the no-code editor
+### /admin — the Board Center
 
-`/admin` is a single page with no dependencies. Sign in with email and
-password; add, edit, publish, unpublish and delete events; read the guest list
-for any event and download it as a spreadsheet; change your own password.
+`/admin` is the staff and board workspace: `admin.html` (shell and the event
+form), `board-center.css` (app shell) and `board-center.js` (everything else).
+Still no build step and no dependencies — plain files served by Pages, talking
+to Supabase Auth and PostgREST over `fetch`.
 
-Authorisation is **not** decided in the browser. Any account can load the page
-— only an address in `event_editors` can read drafts or write anything, and
-RLS enforces that in the database:
+| Section | What it holds |
+| --- | --- |
+| Dashboard | Counts, what needs a person, next event, giving by fund |
+| Enquiries | Every contact-form submission, with stage, owner and notes |
+| People → Directory | One row per person, matched on email across enquiries, volunteers and RSVPs |
+| People → Volunteers | Sign-ups with a pipeline: new → screened → onboarding → active |
+| People → Intake | The intake work queue. Reference numbers only — see below |
+| People → Team & access | Who can sign in and as what (administrators only) |
+| Events | The event editor, with each event's RSVPs and guest-list export under it |
+| Giving | Totals for everyone; donor names and amounts for finance only |
+| Board room → Documents | Labelled links into Drive, grouped by section |
+| Activity log | Every change, and every read of a confidential record (administrators only) |
+
+#### Roles
+
+`staff_members` replaced the flat `event_editors` list. Three roles, and a
+person can hold more than one:
+
+| Role | Grants |
+| --- | --- |
+| `member` | Everything above except donor-level giving and the two admin-only sections |
+| `finance` | Donor names and amounts. Erica and Steve only, by the board's decision |
+| `admin` | Invite people, change roles, read the activity log |
 
 ```sql
--- Let someone edit events
-insert into public.event_editors (email, label)
-values ('someone@example.org', 'Their name')
+-- Invite someone (or do it from People → Team & access)
+insert into public.staff_members (email, label, roles)
+values ('someone@example.org', 'Their name', array['member'])
 on conflict (lower(email)) do update set active = true;
 
 -- Revoke, without losing the record that they had access
-update public.event_editors set active = false where email = '…';
+update public.staff_members set active = false where email = '…';
 ```
 
-Signing in is not sufficient, and that is the point: `is_event_editor()` reads
-the JWT's email claim and checks it against that table on every statement.
+Authorisation is **not** decided in the browser. Hiding a nav item is a
+courtesy to the person using the page; the reason a board member cannot read a
+donor row is that Postgres refuses to send it. `is_member()` and
+`has_role()` read the JWT's email claim and check it on every statement, and
+`is_event_editor()` now delegates to them so nothing that worked before broke.
+
+Two details in that migration are load-bearing and easy to undo by accident:
+
+- **`people_directory` is declared `with (security_invoker = true)`.** A view
+  otherwise runs with its *owner's* rights, which would bypass RLS on the three
+  tables underneath and hand the whole directory to any authenticated account —
+  and anyone can create one of those. With it on, a non-member sees zero rows.
+- **`protect_submission_content()`** pins the name, email, phone and message
+  columns on update, so the words somebody wrote cannot be edited — by the page,
+  by a script, or by a well-meaning staff member. Stage, owner and notes are the
+  writable layer on top. A promise kept only by the UI is not kept.
+
+#### Intake, and the 42 CFR Part 2 boundary
+
+`intake_queue` holds a reference number, a stage, an owner and a follow-up date.
+It holds **no intake answers**, deliberately: those are protected under 42 CFR
+Part 2 and HIPAA, and this database sits behind a public, internet-facing
+surface — the reason it was split from the portal in the first place
+(`docs/MIGRATION.md`). The board gets counts and response times; the record
+itself stays in the system that collected it. Do not add answer columns to this
+table without a compliance decision that is written down somewhere.
 
 > **A PostgREST trap worth knowing.** An `UPDATE` or `DELETE` that RLS filters
 > to zero rows answers **204, no error** — indistinguishable from success. A
 > revoked editor would have been told "Saved" while nothing was written. Every
-> write in `admin.html` therefore goes through `writeRows()`, which sends
+> write in `board-center.js` therefore goes through `writeRows()`, which sends
 > `Prefer: return=representation` and treats an empty array as the failure it
-> is. If you add a write path, use that helper.
+> is. If you add a write path, use that helper — it lives in `board-center.js`.
 
 Event copy is rendered as **escaped text, never markup** — `esc()` in
 `events.js` — so a non-technical editor cannot put HTML on a public page by
@@ -323,7 +368,9 @@ supabase/
   config.toml
   migrations/            schema, applied in filename order
                          (incl. notification_recipients, events,
-                          event_rsvps, event_editors)
+                          event_rsvps, event_editors, and the Board
+                          Center: staff_members, activity_log,
+                          record_notes, intake_queue, board_documents)
   functions/
     _shared/             http (CORS), db, env, validate, notify, stripe
     public-forms/        contact + volunteer + event RSVP
