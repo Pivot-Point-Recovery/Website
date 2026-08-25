@@ -53,10 +53,10 @@ select e.email, e.label, array['member'], e.active
   from public.event_editors e
 on conflict (lower(email)) do nothing;
 
--- The two people who may see donor-level giving, and who administers the rest.
+-- The two people who may see donor-level giving, and who administer the rest.
 insert into public.staff_members (email, label, roles) values
-  ('erica@pivotpointrecovery.org', 'Erica — Executive Director', array['member','finance','admin']),
-  ('steve@pivotpointrecovery.org', 'Steve — Treasurer',          array['member','finance'])
+  ('erica@pivotpointrecovery.org', 'Erica',       array['member','finance','admin']),
+  ('steve@pivotpointrecovery.org', 'Steve — CEO', array['member','finance','admin'])
 on conflict (lower(email)) do update
    set roles  = excluded.roles,
        label  = coalesce(public.staff_members.label, excluded.label),
