@@ -28,9 +28,6 @@
                   letter-spacing: .04em; padding: .2rem .55rem; border-radius: 999px; margin-left: .5rem; vertical-align: middle; }
     .admin-pill.live { background: #e6f4ea; color: #1e7a3c; }
     .admin-pill.draft { background: #fdf1dc; color: #8a5a00; }
-    .admin-help { background: var(--color-blue-light); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 2rem; }
-    .admin-help p { color: var(--color-navy); font-size: .93rem; margin: 0 0 .5rem; }
-    .admin-help p:last-child { margin-bottom: 0; }
     .admin-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
     .admin-table th, .admin-table td { text-align: left; padding: .6rem .5rem; border-bottom: 1px solid var(--color-border);
                                        vertical-align: top; }
@@ -85,12 +82,6 @@
           <button class="btn btn-outline btn-small" id="passwordToggle">Change password</button>
           <button class="btn btn-ghost btn-small" id="signOutBtn">Sign out</button>
         </div>
-      </div>
-
-      <div class="admin-help">
-        <p><strong>How this works.</strong> Everything you add here appears on the website's <a href="/events">Events page</a> as soon as you tick <em>Published</em>. Leave it unticked to save a draft only you can see.</p>
-        <p>RSVPs are emailed to whoever you name in the <em>Send RSVPs to</em> box, and are always listed here under <em>View RSVPs</em> — so nothing is lost even if an email goes astray.</p>
-        <p>Stuck on something, or want a change to a page this form doesn't cover? Ask Claude in Claude Code and it can edit the site for you.</p>
       </div>
 
       <div class="admin-card" id="passwordCard" hidden>
