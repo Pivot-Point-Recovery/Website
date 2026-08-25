@@ -4,13 +4,13 @@
 -- and so re-running it cannot duplicate anything: both inserts are idempotent
 -- on the natural key (event slug, editor email).
 
--- Julie maintains the events calendar from /admin; Erica keeps access as the
--- executive director. Adding someone later is one insert -- no deploy, no
--- secret edit, no code change.
+-- Julie maintains the events calendar from /admin; Erica keeps access too.
+-- Adding someone later is one insert -- no deploy, no secret edit, no code
+-- change.
 insert into public.event_editors (email, label)
 values
   ('jbathel6365@gmail.com',        'Julie — events'),
-  ('erica@pivotpointrecovery.org', 'Erica — Executive Director')
+  ('erica@pivotpointrecovery.org', 'Erica')
 on conflict (lower(email)) do update
    set active = true,
        label  = excluded.label;
