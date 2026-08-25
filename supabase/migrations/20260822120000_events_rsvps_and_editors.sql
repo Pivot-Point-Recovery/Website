@@ -19,7 +19,7 @@ create table if not exists public.events (
 
 alter table public.events
   add column if not exists updated_at    timestamptz default now(),
-  -- URL identity. /event?slug=open-mike-night
+  -- URL identity. /event?slug=open-mic-night
   add column if not exists slug          text,
   add column if not exists title         text,
   -- Short line under the title, e.g. "Share your voice. Inspire change."
@@ -42,7 +42,7 @@ alter table public.events
   add column if not exists postal_code   text,
   add column if not exists image_url     text,
   add column if not exists cost_text     text,
-  -- An event with its own hand-built page (Open Mike Night has one, because a
+  -- An event with its own hand-built page (Open Mic Night has one, because a
   -- printed flyer's QR code points at it) links there from the events list
   -- instead of at the generic /event template.
   add column if not exists detail_url    text,
