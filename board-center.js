@@ -134,7 +134,11 @@
     var data = await res.json().catch(function () { return null; });
     if (!res.ok) {
       var err = data || {};
-      if (err.code === '23505') throw new Error('Another event already uses that web address name. Change it under Advanced.');
+      if (err.code === '23505') {
+        throw new Error(path.indexOf('/events') !== -1
+          ? 'Another event already uses that web address name. Change it under Advanced.'
+          : 'Something with that name or reference already exists. Try a different one.');
+      }
       if (res.status === 401 || res.status === 403 || err.code === '42501') throw new Error(NOT_ALLOWED);
       throw new Error(err.message || 'That did not save. Please try again.');
     }
@@ -927,10 +931,18 @@
 
   // ------------------------------------------------------------------ loads
   async function loadEvents() {
-    events = await get('/events?select=*,event_rsvps(count)&order=starts_at.desc');
-    events.forEach(function (ev) {
-      ev.rsvp_count = (ev.event_rsvps && ev.event_rsvps[0]) ? ev.event_rsvps[0].count : 0;
-    });
+    // The RSVP count is an embedded aggregate. It is a nicety, and this is the
+    // one query the event editor cannot do without, so a server that refuses
+    // the aggregate must not cost us the editor.
+    try {
+      events = await get('/events?select=*,event_rsvps(count)&order=starts_at.desc');
+      events.forEach(function (ev) {
+        ev.rsvp_count = (ev.event_rsvps && ev.event_rsvps[0]) ? ev.event_rsvps[0].count : 0;
+      });
+    } catch (err) {
+      events = await get('/events?select=*&order=starts_at.desc');
+      events.forEach(function (ev) { ev.rsvp_count = null; });
+    }
     renderEvents();
   }
 
@@ -1044,8 +1056,8 @@
     if (btn && btn.dataset.assign) {
       try {
         await writeRows(REST + '/' + btn.dataset.entity + '?id=eq.' + encodeURIComponent(btn.dataset.assign),
-          'PATCH', { owner_email: me.email });
-        logActivity('update', btn.dataset.entity, btn.dataset.assign, { owner_email: me.email });
+          'PATCH', { owner_email: me.jwtEmail });
+        logActivity('update', btn.dataset.entity, btn.dataset.assign, { owner_email: me.jwtEmail });
         showToast('Assigned to you.', 'success');
         closeDrawer();
         await render();
@@ -1060,7 +1072,7 @@
       try {
         await writeRows(REST + '/record_notes', 'POST', {
           entity: btn.dataset.noteEntity, entity_id: btn.dataset.noteAdd,
-          body: body, author_email: me.email,
+          body: body, author_email: me.jwtEmail,
         });
         showToast('Note added.', 'success');
         closeDrawer();
@@ -1194,9 +1206,17 @@
 
     var rows = [];
     try {
-      rows = await get('/staff_members?select=*&email=eq.' + encodeURIComponent(session.email));
+      // Every member may read this table, so fetch it and match the way the
+      // database does -- case-insensitively. An exact-match filter here would
+      // lock out anyone whose staff row is capitalised differently from the
+      // address they sign in with, while RLS happily let them in.
+      rows = await get('/staff_members?select=*');
+      cache.team = rows;
     } catch (err) { /* handled below */ }
-    var mine = rows[0];
+    var signedInAs = String(session.email || '').toLowerCase();
+    var mine = rows.filter(function (r) {
+      return String(r.email || '').toLowerCase() === signedInAs;
+    })[0];
     if (!mine || !mine.active) {
       $('appView').hidden = true;
       $('loginView').hidden = false;
@@ -1207,6 +1227,8 @@
     }
     me = {
       email: mine.email,
+      // What the database compares against in policy checks.
+      jwtEmail: signedInAs,
       roles: mine.roles || [],
       canGiving: (mine.roles || []).indexOf('finance') !== -1,
       canAdmin: (mine.roles || []).indexOf('admin') !== -1,

@@ -254,10 +254,13 @@ Two details in that migration are load-bearing and easy to undo by accident:
   otherwise runs with its *owner's* rights, which would bypass RLS on the three
   tables underneath and hand the whole directory to any authenticated account —
   and anyone can create one of those. With it on, a non-member sees zero rows.
-- **`protect_submission_content()`** pins the name, email, phone and message
-  columns on update, so the words somebody wrote cannot be edited — by the page,
-  by a script, or by a well-meaning staff member. Stage, owner and notes are the
-  writable layer on top. A promise kept only by the UI is not kept.
+- **`protect_submission_content()`** pins every submitted column on update for
+  the `authenticated` role, so nothing signed in to `/admin` can rewrite what
+  somebody wrote. Stage, owner and notes are the writable layer on top; a
+  promise kept only by the UI is not kept. It is scoped to that role
+  deliberately — the service role, migrations and the SQL editor are exempt, so
+  a genuine correction is still possible rather than silently doing nothing. If
+  the public forms start collecting a new field, add it to the pinned list.
 
 #### Intake, and the 42 CFR Part 2 boundary
 
