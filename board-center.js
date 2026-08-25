@@ -1120,8 +1120,8 @@
           email: email.trim(), label: label, roles: ['member'], invited_by: me.email,
         });
         logActivity('invite', 'staff_members', null, { email: email.trim() });
-        showToast('Added. They can sign in once they have a password — ask them to use ' +
-                  '"forgot password" on the sign-in page.', 'success');
+        showToast('Added. Ask them to open /admin, type their email and choose ' +
+                  '"Set or reset your password".', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
       return;
@@ -1265,6 +1265,99 @@
     }
   });
 
+  // Nobody should ever be sent a password. Supabase mails a one-time link and
+  // the person chooses their own, which is also what makes inviting somebody
+  // from Team & access actually work.
+  $('forgotBtn').addEventListener('click', async function () {
+    var email = $('loginEmail').value.trim();
+    if (!email) {
+      showToast('Type your email address above first, then choose this again.', 'error');
+      $('loginEmail').focus();
+      return;
+    }
+    var btn = this;
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = 'Sending…';
+    try {
+      var res = await fetch(AUTH + '/recover?redirect_to=' +
+        encodeURIComponent(window.location.origin + '/admin'), {
+        method: 'POST',
+        headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email }),
+      });
+      // Supabase answers 200 whether or not the address has an account, so that
+      // this form cannot be used to find out who has one. Say the same either
+      // way rather than implying the address was recognised.
+      if (!res.ok && res.status !== 422) {
+        var data = await res.json().catch(function () { return {}; });
+        throw new Error(data.msg || data.error_description || 'Could not send the email.');
+      }
+      showToast('If that address has an account, a link is on its way. It is ' +
+                'good for one hour.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  // --- arriving from a set-password email ------------------------------------
+  /** Supabase returns the tokens in the URL fragment, which never reaches a
+   *  server. Read them, then clear them so the link cannot be reused from
+   *  history or pasted to somebody else. */
+  function takeRecoveryTokens() {
+    var hash = window.location.hash || '';
+    if (hash.indexOf('type=recovery') === -1 && hash.indexOf('type=invite') === -1) return null;
+    var params = new URLSearchParams(hash.replace(/^#/, ''));
+    var access = params.get('access_token');
+    if (!access) return null;
+    history.replaceState(null, '', window.location.pathname);
+    return { access_token: access, refresh_token: params.get('refresh_token') || '' };
+  }
+
+  async function startRecovery(tokens) {
+    saveSession({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, email: '' });
+    var res = await authFetch(AUTH + '/user');
+    if (!res.ok) {
+      saveSession(null);
+      showToast('That link has expired. Choose "Set or reset your password" to get a new one.', 'error');
+      return;
+    }
+    var user = await res.json();
+    saveSession(Object.assign({}, session, { email: user.email }));
+    $('recoverWho').textContent = user.email;
+    $('recoverCard').hidden = false;
+    $('recoverCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('recoverPassword').focus();
+  }
+
+  $('recoverForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var password = $('recoverPassword').value;
+    if (password.length < 8) { showToast('Use at least 8 characters.', 'error'); return; }
+    var btn = $('recoverBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Saving…';
+    try {
+      var res = await authFetch(AUTH + '/user', { method: 'PUT', body: JSON.stringify({ password: password }) });
+      if (!res.ok) {
+        var data = await res.json().catch(function () { return {}; });
+        throw new Error(data.msg || data.error_description || 'Could not save that password.');
+      }
+      $('recoverPassword').value = '';
+      $('recoverCard').hidden = true;
+      showToast('Password saved. Welcome in.', 'success');
+      await start();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save it and sign me in';
+    }
+  });
+
   $('signOutBtn').addEventListener('click', async function () {
     try { await authFetch(AUTH + '/logout', { method: 'POST' }); } catch (err) { /* local sign-out either way */ }
     saveSession(null);
@@ -1309,6 +1402,12 @@
   });
 
   (async function () {
+    // A set-password link takes precedence over whatever session is stored, so
+    // that following one on a shared computer does not silently act on
+    // somebody else's account.
+    var recovery = takeRecoveryTokens();
+    if (recovery) { await startRecovery(recovery); return; }
+
     session = loadSession();
     if (!session) return;
     var res = await authFetch(AUTH + '/user');

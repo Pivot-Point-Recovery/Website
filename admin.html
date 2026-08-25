@@ -63,7 +63,26 @@
             <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Your password">
           </div>
           <button type="submit" class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center">Sign In</button>
-          <p class="form-note" id="loginNote">Trouble signing in? Contact the office and we'll sort it out.</p>
+          <p class="form-note" id="loginNote">
+            <button type="button" class="btn btn-ghost btn-small" id="forgotBtn"
+                    style="padding-left:0">Set or reset your password</button>
+          </p>
+        </form>
+      </div>
+
+      <!-- Shown when somebody arrives from a set-password email. -->
+      <div class="contact-form" id="recoverCard" hidden style="margin-top:1rem">
+        <h2 class="section-title" style="font-size:1.4rem;margin-bottom:.5rem">Choose your password</h2>
+        <p style="font-size:.9rem;color:var(--color-text-mid);margin-bottom:1.25rem">
+          You are setting the password for <strong id="recoverWho"></strong>.
+        </p>
+        <form id="recoverForm" novalidate>
+          <div class="form-group">
+            <label for="recoverPassword">New password (at least 8 characters)</label>
+            <input type="password" id="recoverPassword" autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn btn-primary" id="recoverBtn"
+                  style="width:100%;justify-content:center">Save it and sign me in</button>
         </form>
       </div>
     </div>
