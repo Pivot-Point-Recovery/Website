@@ -211,15 +211,19 @@ to Supabase Auth and PostgREST over `fetch`.
 | Section | What it holds |
 | --- | --- |
 | Dashboard | Counts, what needs a person, next event, giving by fund |
-| Enquiries | Every contact-form submission, with stage, owner and notes |
-| People → Directory | One row per person, matched on email across enquiries, volunteers and RSVPs |
+| People → Contacts | Contact-form submissions, with stage, owner, contact date and notes. Newsletter sign-ups will land here too once a sign-up form exists |
 | People → Volunteers | Sign-ups with a pipeline: new → screened → onboarding → active |
 | People → Intake | The intake work queue. Reference numbers only — see below |
-| People → Team & access | Who can sign in and as what (administrators only) |
+| People → Team & access | Who can sign in, as what, and their password (administrators only) |
 | Events | The event editor, with each event's RSVPs and guest-list export under it |
 | Giving | Totals for everyone; donor names and amounts for finance only |
-| Board room → Documents | Labelled links into Drive, grouped by section |
+| Board room → Documents | The shared Google Drive, plus labelled links grouped by section |
 | Activity log | Every change, and every read of a confidential record (administrators only) |
+
+Every record in Contacts, Volunteers and Intake carries an **owner** and a
+**date they were spoken to**. Both are pickers rather than "assign to me": the
+person who made the call is often not the person at the keyboard, and the date
+back-dates freely because it records what happened, not when it was typed.
 
 #### Roles
 
@@ -261,6 +265,24 @@ Two details in that migration are load-bearing and easy to undo by accident:
   deliberately — the service role, migrations and the SQL editor are exempt, so
   a genuine correction is still possible rather than silently doing nothing. If
   the public forms start collecting a new field, add it to the pinned list.
+
+#### Team sign-ins and passwords
+
+Creating a user or setting somebody else's password needs the service-role key,
+which must never reach a page. So `admin-users` holds it and the endpoint stays
+narrow, behind two independent gates:
+
+1. The caller's own JWT is passed to `has_role('admin')`, so the **database**
+   decides — the same authority as everything else here. The function never
+   reads roles out of the token itself. This matters: JWT verification alone
+   proves nothing, because the publishable anon key *is* a valid JWT.
+2. The target address must already exist in `staff_members`, so the endpoint
+   cannot be pointed at an arbitrary account in the project.
+
+New accounts are created with `email_confirm: true` on purpose — mail from this
+domain is unreliable, and an account nobody can confirm is an account nobody
+can use. A generated password is returned exactly once; one the caller typed is
+never echoed back.
 
 #### Intake, and the 42 CFR Part 2 boundary
 
@@ -376,6 +398,7 @@ supabase/
                           record_notes, intake_queue, board_documents)
   functions/
     _shared/             http (CORS), db, env, validate, notify, stripe
+    admin-users/         team sign-ins and passwords (admin only)
     public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
     donations-webhook/   confirms gifts, sends receipts
@@ -386,6 +409,7 @@ Deploy with the Supabase CLI:
 ```sh
 supabase link --project-ref ihgwhglatsbhngbsezuj
 supabase db push
+supabase functions deploy admin-users                     # JWT verification ON
 supabase functions deploy public-forms      --no-verify-jwt
 supabase functions deploy donations-checkout --no-verify-jwt
 supabase functions deploy donations-webhook  --no-verify-jwt

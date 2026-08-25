@@ -14,6 +14,7 @@
   var AUTH = SUPABASE_URL + '/auth/v1';
   var REST = SUPABASE_URL + '/rest/v1';
   var SESSION_KEY = 'ppr_admin_session';
+  var ADMIN_FN = SUPABASE_URL + '/functions/v1/admin-users';
   var NOT_ALLOWED = 'Nothing was saved — your account is not allowed to make that change. Ask Erica to check your access.';
 
   var session = null;
@@ -145,6 +146,18 @@
     if (Array.isArray(data) && data.length === 0) throw new Error(NOT_ALLOWED);
     return data;
   }
+  /** The one endpoint that is not PostgREST. It holds the service-role key,
+   *  so everything it does is gated on the database's own answer to
+   *  has_role('admin') -- see the function's own header. */
+  async function callAdminFn(body) {
+    var res = await authFetch(ADMIN_FN, { method: 'POST', body: JSON.stringify(body) });
+    var data = await res.json().catch(function () { return {}; });
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'That did not work. Please try again.');
+    }
+    return data;
+  }
+
   /** Fire and forget: a failed audit write must never block the work itself,
    *  but it is logged to the console so a systematic failure is findable. */
   function logActivity(action, entity, id, detail) {
@@ -167,12 +180,11 @@
   var NAV = [
     { group: 'Overview', items: [
       { id: 'dashboard', label: 'Dashboard' },
-      { id: 'enquiries', label: 'Enquiries' },
     ] },
     { group: 'Who we know', items: [
       { id: 'people', label: 'People' },
     ] },
-    { group: 'Programmes', items: [
+    { group: 'Programs', items: [
       { id: 'events', label: 'Events' },
       { id: 'giving', label: 'Giving' },
     ] },
@@ -183,7 +195,7 @@
   ];
   var SUBS = {
     people: [
-      { id: 'directory',  label: 'Directory' },
+      { id: 'contacts',   label: 'Contacts' },
       { id: 'volunteers', label: 'Volunteers' },
       { id: 'intake',     label: 'Intake' },
       { id: 'team',       label: 'Team & access' },
@@ -199,7 +211,7 @@
       if (!items.length) return '';
       return '<div class="bc-navgroup"><p>' + esc(g.group) + '</p>' + items.map(function (it) {
         var badge = '';
-        if (it.id === 'enquiries' && summary && summary.enquiries.unanswered > 0) {
+        if (it.id === 'people' && summary && summary.enquiries.unanswered > 0) {
           badge = '<span class="count">' + summary.enquiries.unanswered + '</span>';
         }
         return '<button class="bc-navitem" data-view="' + it.id + '"' +
@@ -296,7 +308,7 @@
       attn.push({ k: 'crit', sev: 'Needs action',
         t: s.enquiries.unanswered + (s.enquiries.unanswered === 1 ? ' enquiry has' : ' enquiries have') + ' had no reply',
         s: 'Somebody asked for help through the contact form',
-        w: ago(s.enquiries.oldest_unanswered), go: 'enquiries' });
+        w: ago(s.enquiries.oldest_unanswered), go: 'people', goSub: 'contacts' });
     }
     if (s.intake.overdue > 0) {
       attn.push({ k: 'crit', sev: 'Needs action',
@@ -357,48 +369,43 @@
       '</div></div>';
   };
 
-  V.enquiries = function () {
+  /** Contact-form submissions. No longer a section of its own -- they are the
+   *  same thing as an intake enquiry from the organization's point of view, so
+   *  they sit above the intake queue under People. */
+  function enquiriesCard() {
     var rows = cache.enquiries || [];
-    return head('Enquiries', 'Everyone who has written in through the contact form.',
-        '<button class="btn btn-outline btn-small" data-export="enquiries">Download as spreadsheet</button>') +
-      card('Contact form submissions', rows.length + (rows.length === 1 ? ' record' : ' records'),
-        table('<th>Person</th><th>About</th><th>Stage</th><th>Owner</th><th>Received</th>',
-          rows.length ? rows.map(function (r) {
-            return '<tr class="click" data-drawer="enquiry" data-id="' + esc(r.id) + '">' +
-              '<td><span class="nm">' + esc(r.name || 'No name given') + '</span>' +
-              '<span class="sc">' + esc(r.email || '') + '</span></td>' +
-              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.interest || '—') + '</td>' +
-              '<td>' + stagePill(r.status) + '</td><td>' + owner(r.owner_email) + '</td>' +
-              '<td class="ago">' + esc(ago(r.created_at)) + '</td></tr>';
-          }).join('') : '',
-          'No enquiries yet. When somebody uses the contact form they appear here.'));
-  };
+    var waiting = rows.filter(function (r) { return (r.status || 'new') === 'new'; }).length;
+    return card('People who wrote in',
+      rows.length + (rows.length === 1 ? ' enquiry' : ' enquiries') +
+      (waiting ? ' · <strong style="color:var(--bc-stop-fg)">' + waiting + ' with no reply yet</strong>' : ''),
+      table('<th>Person</th><th>About</th><th>Stage</th><th>Owner</th><th>Received</th>',
+        rows.length ? rows.map(function (r) {
+          return '<tr class="click" data-drawer="enquiry" data-id="' + esc(r.id) + '">' +
+            '<td><span class="nm">' + esc(r.name || 'No name given') + '</span>' +
+            '<span class="sc">' + esc(r.email || '') + '</span></td>' +
+            '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.interest || '—') + '</td>' +
+            '<td>' + stagePill(r.status) + '</td><td>' + owner(r.owner_email) + '</td>' +
+            '<td class="ago">' + esc(ago(r.created_at)) + '</td></tr>';
+        }).join('') : '',
+        'Nobody has used the contact form yet. When somebody does, they appear here.'),
+      '<button class="btn btn-outline btn-small" data-export="enquiries">Download as spreadsheet</button>');
+  }
 
   V.people = function () {
     if (sub === 'volunteers') return peopleVolunteers();
     if (sub === 'intake') return peopleIntake();
     if (sub === 'team') return peopleTeam();
-    return peopleDirectory();
+    return peopleContacts();
   };
 
-  function peopleDirectory() {
-    var rows = cache.directory || [];
-    return head('People', 'One row per person, matched on email across enquiries, volunteers and RSVPs.') +
+  function peopleContacts() {
+    return head('People', 'Everyone who has given us their details through the website.') +
       tabs('people') +
-      card('Directory', rows.length + (rows.length === 1 ? ' person' : ' people'),
-        table('<th>Name</th><th>Email</th><th>Known from</th><th>Contacts</th><th>Last seen</th>',
-          rows.length ? rows.map(function (r) {
-            return '<tr><td><span class="nm">' + esc(r.name) + '</span></td>' +
-              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.email) + '</td>' +
-              '<td>' + (r.kinds || []).map(function (k) {
-                return '<span class="bc-pill flat" style="margin-right:.2rem">' + esc(k) + '</span>'; }).join('') + '</td>' +
-              '<td class="r">' + esc(r.touch_count) + '</td>' +
-              '<td class="ago">' + esc(ago(r.last_seen)) + '</td></tr>';
-          }).join('') : '', 'Nobody yet.')) +
-      '<div class="bc-gate"><h3>Read-only for now</h3><p>This directory is worked out from the other tables ' +
-      'each time you open it, so nothing here can be wrong in a way that loses data. Merging duplicates and ' +
-      'adding tags come next; donors are deliberately not included, because donor identity is limited to ' +
-      'Erica and Steve.</p></div>';
+      enquiriesCard() +
+      '<div class="bc-gate"><h3>Newsletter sign-ups will land here too</h3>' +
+      '<p>There is no newsletter sign-up anywhere on the website yet, so there is nothing to collect. ' +
+      'Once one exists, its sign-ups appear in this list alongside the contact form, marked by where ' +
+      'they came from.</p></div>';
   }
 
   function peopleVolunteers() {
@@ -459,7 +466,7 @@
         me.canAdmin ? '<button class="btn btn-primary btn-small" data-team-new="1">+ Invite someone</button>' : '') +
       tabs('people') +
       card('People with access', rows.length + (rows.length === 1 ? ' account' : ' accounts'),
-        table('<th>Person</th><th>Can see</th><th>Status</th>' + (me.canAdmin ? '<th></th>' : ''),
+        table('<th>Person</th><th>Can see</th><th>Status</th>' + (me.canAdmin ? '<th>Account</th>' : ''),
           rows.length ? rows.map(function (r) {
             var roleLabels = (r.roles || []).map(function (x) {
               return { member: 'Everything but giving', finance: 'Giving', admin: 'Manage access' }[x] || x;
@@ -470,7 +477,9 @@
                 return '<span class="bc-pill info" style="margin-right:.2rem">' + esc(l) + '</span>'; }).join('') + '</td>' +
               '<td>' + (r.active ? '<span class="bc-pill ok">Active</span>' : '<span class="bc-pill flat">Switched off</span>') + '</td>' +
               (me.canAdmin
-                ? '<td class="r"><button class="btn btn-ghost btn-small" data-team-toggle="' + esc(r.id) + '" ' +
+                ? '<td class="r" style="white-space:nowrap">' +
+                  '<button class="btn btn-outline btn-small" data-team-password="' + esc(r.email) + '">Password</button> ' +
+                  '<button class="btn btn-ghost btn-small" data-team-toggle="' + esc(r.id) + '" ' +
                   'data-active="' + (r.active ? '1' : '0') + '">' + (r.active ? 'Switch off' : 'Switch on') + '</button></td>'
                 : '') + '</tr>';
           }).join('') : '', 'Nobody yet.')) +
@@ -528,12 +537,36 @@
 
   V.boardroom = function () {
     var rows = cache.documents || [];
+    // The shared drive is the thing people actually want, so it gets its own
+    // card at the top rather than being one row in a list.
+    var drives = rows.filter(function (r) { return r.category === 'Shared drive'; });
     var byCat = {};
-    rows.forEach(function (r) { (byCat[r.category || 'General'] = byCat[r.category || 'General'] || []).push(r); });
+    rows.filter(function (r) { return r.category !== 'Shared drive'; })
+        .forEach(function (r) { (byCat[r.category || 'General'] = byCat[r.category || 'General'] || []).push(r); });
     var cats = Object.keys(byCat).sort();
+
+    var driveCard = drives.length
+      ? '<section class="bc-card"><div class="bc-cardhead"><h3>Shared drive</h3>' +
+        '<p class="note">Everything the team works on, in Google Drive</p></div>' +
+        '<div class="bc-pad" style="display:flex;flex-direction:column;gap:.75rem">' +
+        drives.map(function (d) {
+          return '<div style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;' +
+            'justify-content:space-between">' +
+            '<div style="min-width:0"><p style="font-weight:600;margin:0">' + esc(d.label) + '</p>' +
+            '<p style="font-size:.82rem;color:var(--bc-ink-soft);margin:0">' +
+            'Upload and download happen in Drive itself</p></div>' +
+            '<a class="btn btn-primary btn-small" href="' + esc(d.url) + '" target="_blank" ' +
+            'rel="noopener">Open the shared drive</a></div>';
+        }).join('') +
+        '<p style="font-size:.83rem;color:var(--color-text-mid);margin:0;border-top:1px solid ' +
+        'var(--color-light);padding-top:.7rem">Who can add files is set in Drive, not here. ' +
+        'If somebody can open the folder but not upload to it, their Drive access needs to be ' +
+        '<strong>Editor</strong> rather than Viewer.</p></div></section>'
+      : '';
+
     return head('Board room', 'Papers and files the board needs, kept in Drive.',
         '<button class="btn btn-primary btn-small" data-doc-new="1">+ Add a link</button>') +
-      tabs('boardroom') +
+      tabs('boardroom') + driveCard +
       (cats.length ? cats.map(function (c) {
         return card(c, byCat[c].length + (byCat[c].length === 1 ? ' item' : ' items'),
           table('<th>Name</th><th>Added by</th><th>Added</th>' + (me.canAdmin ? '<th></th>' : ''),
@@ -547,13 +580,14 @@
                   ? '<td class="r"><button class="btn btn-ghost btn-small admin-danger" data-doc-del="' +
                     esc(r.id) + '">Remove</button></td>' : '') + '</tr>';
             }).join('')));
-      }).join('') : card('Documents', null, '<p class="bc-none">No links yet. ' +
-          'Add a link to a Drive folder or file and it appears here for everyone on the team.</p>')) +
-      '<div class="bc-gate"><h3>These are links, not copies</h3><p>The file stays in Drive, so Google keeps ' +
+      }).join('') : (drives.length ? '' : card('Documents', null, '<p class="bc-none">No links yet. ' +
+          'Add a link to a Drive folder or file and it appears here for everyone on the team.</p>'))) +
+      '<div class="bc-gate"><h3>These are links, not copies</h3><p>Files stay in Drive, so Google keeps ' +
       'doing the sharing, version history and virus scanning, and no board paper ends up in a second place ' +
-      'you have to secure.</p><p style="font-size:.83rem;color:var(--bc-ink-soft)">Worth doing before this ' +
-      'fills up: move these folders into a <strong>shared drive</strong> rather than a personal one. Files in ' +
-      'a personal Drive belong to that person and leave with them.</p></div>';
+      'you have to secure. Nothing is uploaded through this page.</p>' +
+      '<p style="font-size:.83rem;color:var(--bc-ink-soft)">One thing worth checking in Google: a folder ' +
+      'held in somebody&rsquo;s personal My Drive belongs to them and goes with them if they leave. A ' +
+      '<strong>shared drive</strong> belongs to the organization instead.</p></div>';
   };
 
   V.activity = function () {
@@ -849,11 +883,48 @@
         esc(STAGE_LABEL[s] || s) + '</button>';
     }).join('') + '</div>';
   }
-  function notesBlock(entity, id) {
+  /** Who is looking after this, when they were actually spoken to, and the
+   *  notes. Assignment is a picker rather than "assign to me", because the
+   *  person who made the call is often not the person at the keyboard. */
+  function workBlock(entity, rec) {
+    var id = rec.id;
+    var team = (cache.team || []).filter(function (t) { return t.active; });
+    var current = String(rec.owner_email || '').toLowerCase();
+    var contacted = rec.first_contact_at
+      ? new Date(rec.first_contact_at).toISOString().slice(0, 10) : '';
+
+    var options = '<option value=""' + (current ? '' : ' selected') + '>Nobody yet</option>' +
+      team.map(function (t) {
+        var v = String(t.email).toLowerCase();
+        return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' +
+          esc(t.label || t.email) + '</option>';
+      }).join('');
+
     var notes = (cache.notes || []).filter(function (n) {
       return n.entity === entity && String(n.entity_id) === String(id);
     });
-    return '<div class="bc-dsec"><h4>Notes from the team</h4>' +
+
+    return '<div class="bc-dsec"><h4>Who is on it</h4>' +
+      '<div style="display:flex;flex-direction:column;gap:.7rem">' +
+      '<label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;color:var(--bc-ink-soft)">' +
+      'Assigned to' +
+      '<select id="wbOwner" style="font-family:var(--font-body);font-size:.9rem;padding:.45rem .5rem;' +
+      'border:1px solid var(--color-border);border-radius:8px;background:var(--color-white);' +
+      'color:var(--color-text)">' + options + '</select></label>' +
+      '<label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;color:var(--bc-ink-soft)">' +
+      'Spoken to on' +
+      '<input type="date" id="wbContacted" value="' + esc(contacted) + '" ' +
+      'style="font-family:var(--font-body);font-size:.9rem;padding:.45rem .5rem;' +
+      'border:1px solid var(--color-border);border-radius:8px"></label>' +
+      '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Leave the date blank if nobody ' +
+      'has reached them yet. Back-date it freely — it is a record of what happened, not when it was typed.</p>' +
+      '<div class="bc-actions">' +
+      '<button class="btn btn-blue btn-small" data-work-save="' + esc(id) + '" ' +
+      'data-work-entity="' + entity + '">Save</button>' +
+      '<button class="btn btn-outline btn-small" data-work-today="1">Spoken to today</button>' +
+      '</div></div></div>' +
+
+      '<div class="bc-dsec"><h4>Notes from the team</h4>' +
       (notes.length ? notes.map(function (n) {
         return '<div class="bc-note"><span>' + esc(n.body) + '</span>' +
           '<span class="who">' + esc(String(n.author_email || '').split('@')[0]) + ' · ' + esc(ago(n.created_at)) + '</span></div>';
@@ -862,10 +933,8 @@
       '<textarea id="noteBody" rows="2" placeholder="What happened, or what needs to happen next" ' +
       'style="width:100%;font-family:var(--font-body);font-size:.88rem;padding:.5rem .6rem;' +
       'border:1px solid var(--color-border);border-radius:8px"></textarea>' +
-      '<div class="bc-actions"><button class="btn btn-blue btn-small" data-note-add="' + esc(id) + '" ' +
-      'data-note-entity="' + entity + '">Add note</button>' +
-      '<button class="btn btn-outline btn-small" data-assign="' + esc(id) + '" data-entity="' + entity + '">Assign to me</button>' +
-      '</div></div></div>';
+      '<div class="bc-actions"><button class="btn btn-outline btn-small" data-note-add="' + esc(id) + '" ' +
+      'data-note-entity="' + entity + '">Add note</button></div></div></div>';
   }
 
   var DRAWER = {
@@ -880,11 +949,12 @@
         '<dt>Email</dt><dd><a href="mailto:' + esc(r.email) + '">' + esc(r.email || '—') + '</a></dd>' +
         '<dt>Phone</dt><dd>' + esc(r.phone || '—') + '</dd>' +
         '<dt>About</dt><dd>' + esc(r.interest || '—') + '</dd>' +
-        '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd></dl></div>' +
+        '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
+        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
         '<div class="bc-dsec"><h4>What they wrote</h4><div class="bc-quote">' + esc(r.message || '(nothing)') + '</div>' +
         '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Never edited, by anybody. ' +
         'Everything the team adds is a separate note below.</p></div>' +
-        notesBlock('contact_submissions', id);
+        workBlock('contact_submissions', r);
     },
     volunteer: function (id) {
       var r = (cache.volunteers || []).filter(function (x) { return x.id === id; })[0];
@@ -900,10 +970,11 @@
         '<dt>Town</dt><dd>' + esc(r.city || '—') + '</dd>' +
         '<dt>Interests</dt><dd>' + esc((r.interests || []).join(', ') || '—') + '</dd>' +
         '<dt>Available</dt><dd>' + esc(r.availability || '—') + '</dd>' +
-        '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd></dl></div>' +
+        '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
+        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
         (r.experience ? '<div class="bc-dsec"><h4>What they told us</h4>' +
           '<div class="bc-quote">' + esc(r.experience) + '</div></div>' : '') +
-        notesBlock('volunteer_interests', id);
+        workBlock('volunteer_interests', r);
     },
     intake: function (id) {
       var r = (cache.intake || []).filter(function (x) { return x.id === id; })[0];
@@ -915,9 +986,7 @@
         '<div class="bc-dsec"><h4>The work, not the answers</h4><dl class="bc-kv">' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
         '<dt>Follow-up</dt><dd>' + esc(r.follow_up_due || 'not set') + '</dd>' +
-        '<dt>First contact</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl>' +
-        (r.first_contact_at ? '' : '<div class="bc-actions"><button class="btn btn-blue btn-small" ' +
-          'data-intake-contacted="' + esc(id) + '">Mark first contact made</button></div>') + '</div>' +
+        '<dt>First contact</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
         '<div class="bc-dsec"><h4>The record itself</h4>' +
         '<div class="bc-quote">This queue holds a reference number, a stage and a follow-up date. What the ' +
         'person wrote lives in the system that collected it, under 42 CFR Part 2.</div>' +
@@ -925,7 +994,7 @@
           '" target="_blank" rel="noopener">Open the record</a></div>' +
           '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Opening it is written to the ' +
           'activity log with your name and the time.</p>' : '') + '</div>' +
-        notesBlock('intake_queue', id);
+        workBlock('intake_queue', r);
     },
   };
 
@@ -948,9 +1017,6 @@
 
   var LOADERS = {
     dashboard: async function () { summary = await rpc('board_summary'); },
-    enquiries: async function () {
-      cache.enquiries = await get('/contact_submissions?select=*&order=created_at.desc&limit=500');
-    },
     giving: async function () {
       if (me.canGiving) cache.gifts = await get('/donations?select=*&order=created_at.desc&limit=200');
     },
@@ -962,8 +1028,8 @@
     },
   };
   var PEOPLE_LOADERS = {
-    directory:  async function () { cache.directory = await get('/people_directory?select=*&order=last_seen.desc&limit=500'); },
     volunteers: async function () { cache.volunteers = await get('/volunteer_interests?select=*&order=created_at.desc&limit=500'); },
+    contacts:   async function () { cache.enquiries = await get('/contact_submissions?select=*&order=created_at.desc&limit=500'); },
     intake:     async function () { cache.intake = await get('/intake_queue?select=*&order=received_at.desc&limit=500'); },
     team:       async function () { cache.team = await get('/staff_members?select=*&order=label'); },
   };
@@ -983,12 +1049,12 @@
       if (!summary) summary = await rpc('board_summary');
       if (LOADERS[view]) await LOADERS[view]();
       if (view === 'people') {
-        if (!sub) sub = 'directory';
+        if (!sub) sub = 'contacts';
         await PEOPLE_LOADERS[sub]();
+        if (sub === 'contacts') await loadNotes('contact_submissions');
         if (sub === 'volunteers') await loadNotes('volunteer_interests');
         if (sub === 'intake') await loadNotes('intake_queue');
       }
-      if (view === 'enquiries') await loadNotes('contact_submissions');
       if (view === 'boardroom' && !sub) sub = 'documents';
       if (view === 'events') { content.innerHTML = V.events(); await loadEvents(); renderNav(); return; }
       content.innerHTML = (V[view] || V.dashboard)();
@@ -1052,13 +1118,29 @@
       return;
     }
 
-    // ---- assign to me
-    if (btn && btn.dataset.assign) {
+    // ---- who is on it, and when they were spoken to
+    if (btn && btn.dataset.workToday) {
+      var d = $('wbContacted');
+      if (d) d.value = new Date().toISOString().slice(0, 10);
+      return;
+    }
+    if (btn && btn.dataset.workSave) {
+      var ownerVal = ($('wbOwner') && $('wbOwner').value) || '';
+      var dateVal = ($('wbContacted') && $('wbContacted').value) || '';
+      var patch = {
+        owner_email: ownerVal || null,
+        // A date with no time means noon local, not midnight UTC, so a
+        // back-dated entry does not slide to the day before.
+        first_contact_at: dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : null,
+      };
       try {
-        await writeRows(REST + '/' + btn.dataset.entity + '?id=eq.' + encodeURIComponent(btn.dataset.assign),
-          'PATCH', { owner_email: me.jwtEmail });
-        logActivity('update', btn.dataset.entity, btn.dataset.assign, { owner_email: me.jwtEmail });
-        showToast('Assigned to you.', 'success');
+        await writeRows(REST + '/' + btn.dataset.workEntity + '?id=eq.' +
+          encodeURIComponent(btn.dataset.workSave), 'PATCH', patch);
+        logActivity('update', btn.dataset.workEntity, btn.dataset.workSave, patch);
+        showToast(ownerVal
+          ? 'Saved — assigned to ' + ownerVal.split('@')[0] + '.'
+          : 'Saved.', 'success');
+        summary = null;
         closeDrawer();
         await render();
       } catch (err) { showToast(err.message, 'error'); }
@@ -1081,19 +1163,6 @@
       return;
     }
 
-    // ---- intake: first contact
-    if (btn && btn.dataset.intakeContacted) {
-      try {
-        await writeRows(REST + '/intake_queue?id=eq.' + encodeURIComponent(btn.dataset.intakeContacted),
-          'PATCH', { first_contact_at: new Date().toISOString(), stage: 'in_assessment' });
-        showToast('First contact recorded.', 'success');
-        summary = null;
-        closeDrawer();
-        await render();
-      } catch (err) { showToast(err.message, 'error'); }
-      return;
-    }
-
     // ---- intake: add to the queue
     if (btn && btn.dataset.intakeNew) {
       var ref = prompt('Reference number for this intake (no names, please):');
@@ -1110,6 +1179,49 @@
       return;
     }
 
+    // ---- team: give somebody a password, or their first sign-in
+    if (btn && btn.dataset.teamPassword) {
+      var target = btn.dataset.teamPassword;
+      var choice = prompt(
+        'Password for ' + target + '.\n\n' +
+        'Leave blank and a strong one will be made for you and shown once.\n' +
+        'Type "email" to send them a reset link instead.\n\n' +
+        'At least 12 characters.', '');
+      if (choice === null) return;
+      choice = choice.trim();
+
+      var body;
+      if (choice.toLowerCase() === 'email') {
+        body = { action: 'send_reset', email: target };
+      } else if (choice === '') {
+        body = { action: 'set_or_create', email: target };
+      } else if (choice.length < 12) {
+        showToast('Use at least 12 characters, or leave it blank to have one made.', 'error');
+        return;
+      } else {
+        body = { action: 'set_or_create', email: target, password: choice };
+      }
+
+      try {
+        var out = await callAdminFn(body);
+        if (body.action === 'send_reset') {
+          showToast('Reset link sent to ' + target + '. Good for one hour.', 'success');
+        } else if (out.password) {
+          // Shown once, deliberately in a dialog rather than a toast that
+          // disappears: this is the only time anybody sees it.
+          alert('Password set for ' + target + ':\n\n    ' + out.password + '\n\n' +
+                'Give it to them by phone or a password manager — not email. ' +
+                'Ask them to change it under "Change password" once they are in.\n\n' +
+                'This will not be shown again.');
+          showToast('Password set.', 'success');
+        } else {
+          showToast('Password set for ' + target + '.', 'success');
+        }
+        await render();
+      } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+
     // ---- team: invite / switch off
     if (btn && btn.dataset.teamNew) {
       var email = prompt('Email address of the person to invite:');
@@ -1120,8 +1232,8 @@
           email: email.trim(), label: label, roles: ['member'], invited_by: me.email,
         });
         logActivity('invite', 'staff_members', null, { email: email.trim() });
-        showToast('Added. Ask them to open /admin, type their email and choose ' +
-                  '"Set or reset your password".', 'success');
+        showToast('Added to the team. Now give them a sign-in with the ' +
+                  'Password button on their row.', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
       return;
@@ -1208,7 +1320,7 @@
     try {
       // Every member may read this table, so fetch it and match the way the
       // database does -- case-insensitively. An exact-match filter here would
-      // lock out anyone whose staff row is capitalised differently from the
+      // lock out anyone whose staff row is capitalized differently from the
       // address they sign in with, while RLS happily let them in.
       rows = await get('/staff_members?select=*');
       cache.team = rows;
@@ -1288,7 +1400,7 @@
       });
       // Supabase answers 200 whether or not the address has an account, so that
       // this form cannot be used to find out who has one. Say the same either
-      // way rather than implying the address was recognised.
+      // way rather than implying the address was recognized.
       if (!res.ok && res.status !== 422) {
         var data = await res.json().catch(function () { return {}; });
         throw new Error(data.msg || data.error_description || 'Could not send the email.');
