@@ -284,6 +284,52 @@ domain is unreliable, and an account nobody can confirm is an account nobody
 can use. A generated password is returned exactly once; one the caller typed is
 never echoed back.
 
+The "email" option on the Password button sends a one-time link that comes back
+to `/admin` (`redirect_to` is set explicitly, so the project's Site URL setting
+does not decide where the link lands). That link is only as reliable as mail
+delivery to the person, which — see Forms above — is not something to assume.
+
+#### Board sign-ins, and minting a link when mail cannot be trusted
+
+`20260925180000_board_sign_ins.sql` lists the board on `staff_members` so the
+team is reproducible from the migrations alone. It does not create sign-ins:
+`staff_members` says who is *allowed* in, and the Supabase Auth account is what
+lets them sign in. Both are needed, and only the first is in the schema.
+
+When a set-password email cannot be relied on, a link can be minted directly
+from the SQL editor. Supabase's own `generate_link` produces exactly this: a
+token stored on the user row and a `verify` URL carrying it.
+
+```sql
+-- One person. The link is single-use; recovery_sent_at plus the project's
+-- "email OTP expiry" (an hour by default) is when it stops working, so a
+-- later timestamp keeps it usable for someone who reads email weekly.
+update auth.users
+   set recovery_token   = encode(extensions.gen_random_bytes(28), 'hex'),
+       recovery_sent_at = now()
+ where lower(email) = 'someone@pivotpointrecovery.org'
+returning email, recovery_token;
+```
+
+```
+https://ihgwhglatsbhngbsezuj.supabase.co/auth/v1/verify
+   ?token=<recovery_token>&type=recovery
+   &redirect_to=https://pivotpointrecovery.org/admin
+```
+
+Opening it signs the person in and drops them on the "Choose your password"
+card in `/admin`. Hand the link to the one person it is for, by a channel you
+trust; anyone holding it *is* them until it is used. To void an unused link,
+set `recovery_token` back to `''`. `redirect_to` must be on the allow list
+under Authentication → URL Configuration in the Supabase dashboard, or the
+link falls back to the Site URL configured there.
+
+The board accounts (Steve, Elyse, Geneva, Lauren, Grant) were created this way
+on 2026-09-25, each with a random password nobody knows, and each given a
+link to choose their own. Grant signs in as
+`grantsmith.financial@gmail.com` — the address the board's mail already goes
+to — because he has no mailbox on the domain.
+
 #### Intake, and the 42 CFR Part 2 boundary
 
 `intake_queue` holds a reference number, a stage, an owner and a follow-up date.
