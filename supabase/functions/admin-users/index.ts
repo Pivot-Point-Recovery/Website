@@ -20,6 +20,7 @@
 // valid JWT alone proves nothing here -- the anon key is a valid JWT -- which
 // is exactly why gate 1 is not optional.
 
+import { env } from '../_shared/env.ts';
 import { fail, json, preflight } from '../_shared/http.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -218,7 +219,12 @@ Deno.serve(async (req: Request) => {
 
   // ------------------------------------------------------- mail them a link
   if (action === 'send_reset') {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+    // Send them back to /admin explicitly. Without redirect_to the link lands
+    // on whatever the project's Site URL happens to be, and the page that
+    // knows how to turn a recovery token into a password is this one.
+    const site = env('SITE_URL', 'https://pivotpointrecovery.org').replace(/\/$/, '');
+    const redirect = encodeURIComponent(`${site}/admin`);
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/recover?redirect_to=${redirect}`, {
       method: 'POST',
       headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
