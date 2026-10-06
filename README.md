@@ -287,7 +287,11 @@ highlight and "Spoken to today" — not the browser's UTC date, which runs a day
 ahead every evening after 8pm Eastern. On the dashboard, a **failed payment**
 is a gift Stripe declined (`status = 'failed'`); a donor who opened the payment
 page and left (`expired`) is counted separately as a gift "started but not
-finished", because nothing went wrong and nothing was charged.
+finished", because nothing went wrong and nothing was charged. An intake is
+**overdue** while it is still awaiting contact, no first contact is recorded,
+and its follow-up date has passed: the date is the deadline for first contact,
+so moving someone on to assessment or enrolled, or recording when they were
+first spoken to, takes them off the overdue count without closing them.
 
 **Reply** sits at the top of every contact and volunteer drawer: *Reply in
 Gmail* (the team's mail is Google Workspace; it opens in the signed-in
@@ -312,7 +316,8 @@ notification lists one page covering the last seven days and what is waiting:
 - enquiries with no reply, longest-waiting first;
 - everyone who signed up to volunteer that week (town, interests,
   availability), then anyone older still waiting to be screened;
-- open intake references, overdue follow-ups and those due in the week ahead;
+- open intake references, then the ones nobody has reached yet that are past
+  their follow-up date or due in the week ahead;
 - giving: the week's and month's totals, receipts not yet sent (and how many
   are $250 or more), failed payments, unfinished checkouts, and any gift stuck
   at Stripe for over a day;
