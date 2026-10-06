@@ -16,6 +16,7 @@
   var SESSION_KEY = 'ppr_admin_session';
   var ADMIN_FN = SUPABASE_URL + '/functions/v1/admin-users';
   var RECONCILE_FN = SUPABASE_URL + '/functions/v1/donations-reconcile';
+  var DIGEST_FN = SUPABASE_URL + '/functions/v1/board-digest';
   var NOT_ALLOWED = 'Nothing was saved — your account is not allowed to make that change. Ask Erica to check your access.';
 
   var session = null;
@@ -445,7 +446,10 @@
       return { f: fundLabel(f.fund), v: Number(f.cents), label: money(Number(f.cents)) };
     });
 
-    return head('This week', 'Signed in as ' + esc(me.email) + '.') +
+    return head('This week', 'Signed in as ' + esc(me.email) + '.',
+        // The same list goes to the team by email every Monday morning.
+        me.canAdmin ? '<button class="btn btn-outline btn-small" data-digest-preview="1">' +
+          'Email me the Monday summary</button>' : '') +
       '<div class="bc-grid bc-g4">' + tiles + '</div>' +
       '<div class="bc-split"><div style="display:flex;flex-direction:column;gap:1rem">' +
       card('Needs a person', 'Most urgent first', '<div class="bc-attn">' + attn.map(function (a) {
@@ -1502,6 +1506,19 @@
         showToast(err.message, 'error');
         btn.disabled = false;
       }
+      return;
+    }
+
+    // ---- the Monday summary, sent now to the administrator asking
+    if (btn && btn.dataset.digestPreview) {
+      btn.disabled = true;
+      try {
+        var sentDigest = await authFetch(DIGEST_FN, { method: 'POST', body: JSON.stringify({ preview: true }) });
+        var digestOut = await sentDigest.json().catch(function () { return {}; });
+        if (!sentDigest.ok || !digestOut.ok) throw new Error(digestOut.error || 'The summary did not send. Please try again.');
+        showToast('Sent to ' + me.email + '. The team gets this every Monday at 8:50am.', 'success');
+      } catch (err) { showToast(err.message, 'error'); }
+      btn.disabled = false;
       return;
     }
 

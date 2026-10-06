@@ -289,6 +289,54 @@ Every record in Contacts, Volunteers and Intake carries an **owner** and a
 person who made the call is often not the person at the keyboard, and the date
 back-dates freely because it records what happened, not when it was typed.
 
+#### The Monday summary
+
+Every Monday at 8:50am New York time, `board-digest` emails the staff
+notification lists one page covering the last seven days and what is waiting:
+
+- enquiries with no reply, longest-waiting first;
+- everyone who signed up to volunteer that week (town, interests,
+  availability), then anyone older still waiting to be screened;
+- open intake references, overdue follow-ups and those due in the week ahead;
+- giving: the week's and month's totals, receipts not yet sent (and how many
+  are $250 or more), failed payments, unfinished checkouts, and any gift stuck
+  at Stripe for over a day;
+- the next event and its RSVPs, and any drafts.
+
+**Each gift with its donor** goes only to people on the *donations* list
+(`notification_recipients.receives_donations`, or the `NOTIFICATION_EMAILS`
+secret), who already get every gift by email as it arrives. Anybody on the
+forms list alone gets the totals. Never in it: what anybody wrote, a donor's
+contact details or note, or any intake answer.
+
+pg_cron runs in UTC, so `20261006220000_board_digest_schedule.sql` calls the
+function at 12:50 and 13:50 UTC on Mondays and the function sends only on the
+call that lands at 8 o'clock in New York — once a week, same local time, either
+side of daylight saving. It authenticates with the scheduler's Vault token,
+the one `donations-reconcile` already checks. Every send, preview and failure
+is written to the activity log.
+
+- **See it now:** *Email me the Monday summary* on the Dashboard
+  (administrators) sends this week's to you alone — with donors only if you
+  have Giving.
+- **Look without sending** (SQL editor; the response lands in
+  `net._http_response`):
+
+  ```sql
+  select net.http_post(
+    url := 'https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/board-digest',
+    headers := jsonb_build_object('Content-Type', 'application/json',
+      'x-schedule-token', (select decrypted_secret from vault.decrypted_secrets
+                            where name = 'donations_reconcile_token')),
+    body := '{"dry_run": true}'::jsonb);
+  ```
+
+  `{"preview_to": "someone@…"}` sends one copy (`"variant": "full"` to include
+  donors); `{"force": true}` sends to the lists now.
+- **Change who gets it:** the same `notification_recipients` rows as every
+  other staff email.
+- **Pause it:** `update cron.job set active = false where jobname like 'board-digest%';`
+
 #### Roles
 
 `staff_members` replaced the flat `event_editors` list. Three roles, and a
@@ -589,6 +637,7 @@ supabase/
   functions/
     _shared/             http (CORS), db, env, validate, notify, stripe, donations
     admin-users/         team sign-ins and passwords (admin only)
+    board-digest/        the Monday summary email to staff (pg_cron)
     intake-webhook/      Google Form intake -> queue + staff email
     public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
@@ -602,6 +651,7 @@ Deploy with the Supabase CLI:
 supabase link --project-ref ihgwhglatsbhngbsezuj
 supabase db push
 supabase functions deploy admin-users                     # JWT verification ON
+supabase functions deploy board-digest      --no-verify-jwt
 supabase functions deploy intake-webhook    --no-verify-jwt
 supabase functions deploy public-forms      --no-verify-jwt
 supabase functions deploy donations-checkout --no-verify-jwt

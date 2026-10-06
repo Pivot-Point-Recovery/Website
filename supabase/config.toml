@@ -28,3 +28,10 @@ verify_jwt = false
 # and refuses every request while that secret is unset.
 [functions.intake-webhook]
 verify_jwt = false
+
+# The Monday summary email. Called by pg_cron, which holds no user session, and
+# by an administrator previewing it from the Board Center. It authenticates both
+# itself: the scheduler's token against Vault, a person's session against
+# has_role('admin').
+[functions.board-digest]
+verify_jwt = false
