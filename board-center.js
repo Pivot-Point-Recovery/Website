@@ -556,6 +556,27 @@
           'The queue is empty. Add an entry each time an intake form comes in.'));
   }
 
+  /** What a set of roles amounts to, in the words the page uses. */
+  function accessPills(roles) {
+    roles = roles || [];
+    var giving = roles.indexOf('finance') !== -1;
+    return '<span class="bc-pill info" style="margin-right:.2rem">' +
+        (giving ? 'Everything' : 'Everything but giving') + '</span>' +
+      (roles.indexOf('admin') !== -1
+        ? '<span class="bc-pill warn" style="margin-right:.2rem">Manage access</span>' : '');
+  }
+  /** "Erica and Steve": the active people holding a role, by first name. */
+  function whoHas(role) {
+    var names = (cache.team || []).filter(function (t) {
+      return t.active && (t.roles || []).indexOf(role) !== -1;
+    }).map(function (t) {
+      return String(t.label || t.email.split('@')[0]).split(/\s+[–—-]\s+/)[0];
+    });
+    if (!names.length) return 'nobody yet';
+    return names.length === 1 ? names[0]
+      : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
+
   function peopleTeam() {
     var rows = cache.team || [];
     return head('People', 'Everyone who can sign in, and what each of them can see.',
@@ -564,16 +585,16 @@
       card('People with access', rows.length + (rows.length === 1 ? ' account' : ' accounts'),
         table('<th>Person</th><th>Can see</th><th>Status</th>' + (me.canAdmin ? '<th>Account</th>' : ''),
           rows.length ? rows.map(function (r) {
-            var roleLabels = (r.roles || []).map(function (x) {
-              return { member: 'Everything but giving', finance: 'Giving', admin: 'Manage access' }[x] || x;
-            });
-            return '<tr><td><span class="nm">' + esc(r.label || r.email) + '</span>' +
+            var name = esc(r.label || r.email);
+            // No row-wide click here: the row's own buttons (Password, Switch
+            // off) would open the drawer instead of doing their job.
+            return '<tr><td>' + (me.canAdmin ? rowLink('person', r.id, name) : '<span class="nm">' + name + '</span>') +
               '<span class="sc">' + esc(r.email) + '</span></td>' +
-              '<td>' + roleLabels.map(function (l) {
-                return '<span class="bc-pill info" style="margin-right:.2rem">' + esc(l) + '</span>'; }).join('') + '</td>' +
+              '<td>' + accessPills(r.roles) + '</td>' +
               '<td>' + (r.active ? '<span class="bc-pill ok">Active</span>' : '<span class="bc-pill flat">Switched off</span>') + '</td>' +
               (me.canAdmin
                 ? '<td class="r" style="white-space:nowrap">' +
+                  '<button class="btn btn-blue btn-small" data-drawer="person" data-id="' + esc(r.id) + '">Access</button> ' +
                   '<button class="btn btn-outline btn-small" data-team-password="' + esc(r.email) + '">Password</button> ' +
                   // Switching yourself off locks you out with nobody to let
                   // you back in, so your own row does not offer it.
@@ -585,10 +606,11 @@
                 : '') + '</tr>';
           }).join('') : '', 'Nobody yet.')) +
       (me.canAdmin
-        ? '<div class="bc-gate"><h2>Giving is limited to Erica and Steve</h2><p>Everyone invited sees ' +
-          'everything else — enquiries, volunteers, the intake queue, events and documents. Adding ' +
-          '<em>Giving</em> to somebody lets them see donor names and amounts, so it stays with the executive ' +
-          'director and the treasurer unless the board decides otherwise.</p></div>'
+        ? '<div class="bc-gate"><h2>Giving is limited to ' + esc(whoHas('finance')) + '</h2><p>Everyone invited ' +
+          'sees everything else — enquiries, volunteers, the intake queue, events and documents. ' +
+          '<em>Giving</em> adds donor names, contact details, amounts and notes, so keep it with the people who ' +
+          'acknowledge gifts and reconcile the bank unless the board decides otherwise. Choose ' +
+          '<strong>Access</strong> on anybody’s row to change what they can see.</p></div>'
         : '');
   }
 
@@ -613,7 +635,7 @@
         '<div class="bc-split"><div>' +
         (funds.length ? card('By fund', 'This month', hbars(funds, 'Total', money(s.giving.month_cents)))
                       : card('By fund', 'This month', '<p class="bc-none">No gifts recorded this month.</p>')) +
-        '</div><div><div class="bc-gate"><h2>Donor names are limited to Erica and Steve</h2>' +
+        '</div><div><div class="bc-gate"><h2>Donor names are limited to ' + esc(whoHas('finance')) + '</h2>' +
         '<p>Who gave and how much stays with the executive director and the treasurer, who acknowledge gifts ' +
         'and reconcile the bank. The totals above are the same ones they see, and are what the board reports ' +
         'on.</p><p style="font-size:.83rem;color:var(--bc-ink-soft)">Enforced in the database, not by hiding ' +
@@ -1177,6 +1199,49 @@
           : '') +
         '</div></div>';
     },
+    /** One person's access. Admins only -- and the database, not this
+     *  drawer, is what stops anybody else changing it (staff_admin_write),
+     *  or the last person with Manage access from losing it. */
+    person: function (id) {
+      var r = (cache.team || []).filter(function (x) { return x.id === id; })[0];
+      if (!r || !me.canAdmin) return '';
+      var roles = r.roles || [];
+      var self = String(r.email).toLowerCase() === me.jwtEmail;
+      function option(role, title, detail, locked) {
+        return '<label style="display:flex;gap:.65rem;align-items:flex-start;font-size:.88rem;cursor:' +
+          (locked ? 'default' : 'pointer') + '">' +
+          '<input type="checkbox" id="pm-' + role + '" data-role="' + role + '"' +
+          (roles.indexOf(role) !== -1 ? ' checked' : '') + (locked ? ' disabled' : '') +
+          ' style="margin-top:.25rem;width:1.05rem;height:1.05rem;flex:none">' +
+          '<span><strong style="display:block">' + esc(title) + '</strong>' +
+          '<span style="color:var(--color-text-mid)">' + detail + '</span></span></label>';
+      }
+      return dhead(r.label || r.email, r.email,
+          r.active ? '<span class="bc-pill ok">Active</span>' : '<span class="bc-pill flat">Switched off</span>') +
+        '<div class="bc-dsec"><h3>What they can see</h3>' +
+        '<p style="font-size:.86rem;color:var(--color-text-mid);margin:0">Everybody who can sign in sees ' +
+        'enquiries, volunteers, the intake queue, events and the board room.</p>' +
+        option('finance', 'Giving', 'Donor names, emails, phone numbers, addresses, amounts and notes — and ' +
+          'sending receipts.') +
+        option('admin', 'Manage access', 'Invite people, set passwords, switch accounts off, and change what ' +
+          'everybody can see — including this.', self) +
+        (self
+          ? '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">You cannot take Manage access away ' +
+            'from yourself. Another person with it can.</p>'
+          : '') +
+        '</div>' +
+        '<div class="bc-dsec"><h3>Name on this page</h3>' +
+        '<input type="text" id="pmLabel" maxlength="80" value="' + esc(r.label || '') + '" ' +
+        'aria-label="Name on this page" placeholder="' + esc(r.email) + '" ' +
+        'style="font-family:var(--font-body);font-size:.9rem;padding:.45rem .55rem;' +
+        'border:1px solid var(--color-border);border-radius:8px;width:100%">' +
+        '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">For example “Grant – board”. ' +
+        'It is how they appear in lists and the owner picker.</p></div>' +
+        '<div class="bc-dsec"><div class="bc-actions">' +
+        '<button class="btn btn-blue btn-small" data-person-save="' + esc(r.id) + '">Save</button></div>' +
+        '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Takes effect the next time they open ' +
+        'or refresh a page. Every change is written to the activity log.</p></div>';
+    },
   };
 
   // ------------------------------------------------------------------ loads
@@ -1393,6 +1458,53 @@
       return;
     }
 
+    // ---- team: what somebody can see
+    if (btn && btn.dataset.personSave) {
+      var pid = btn.dataset.personSave;
+      var person = (cache.team || []).filter(function (x) { return x.id === pid; })[0];
+      if (!person) return;
+      var had = person.roles || [];
+      var roles = ['member'];
+      ['finance', 'admin'].forEach(function (role) {
+        var box = $('pm-' + role);
+        // A disabled box (your own Manage access) keeps what it had.
+        if (box ? box.checked : had.indexOf(role) !== -1) roles.push(role);
+      });
+      var newLabel = (($('pmLabel') && $('pmLabel').value) || '').trim() || null;
+      var who = newLabel || person.label || person.email;
+      var gaining = roles.filter(function (x) { return x !== 'member' && had.indexOf(x) === -1; });
+      if (gaining.length) {
+        var what = gaining.map(function (x) {
+          return x === 'finance'
+            ? 'see every donor’s name, contact details, gifts and notes'
+            : 'invite people, set passwords and change what everybody can see';
+        }).join(', and ');
+        if (!confirm('Let ' + who + ' ' + what + '?')) return;
+      }
+      btn.disabled = true;
+      try {
+        await writeRows(REST + '/staff_members?id=eq.' + encodeURIComponent(pid), 'PATCH',
+          { roles: roles, label: newLabel });
+        logActivity('update', 'staff_members', pid, { roles: roles, previous_roles: had, label: newLabel });
+        showToast('Saved — ' + who + ' can now see ' +
+          (roles.indexOf('finance') !== -1 ? 'everything' : 'everything but giving') +
+          (roles.indexOf('admin') !== -1 ? ', and manage access.' : '.'), 'success');
+        if (String(person.email).toLowerCase() === me.jwtEmail) {
+          me.roles = roles;
+          me.canGiving = roles.indexOf('finance') !== -1;
+          me.canAdmin = roles.indexOf('admin') !== -1;
+          $('bcRole').textContent = me.canAdmin ? 'Administrator' : me.canGiving ? 'Giving access' : 'Team';
+        }
+        closeDrawer();
+        await render();
+        refocusRow(pid);
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+      }
+      return;
+    }
+
     // ---- intake: add to the queue
     if (btn && btn.dataset.intakeNew) {
       var ref = prompt('Reference number for this intake (no names, please):');
@@ -1469,8 +1581,8 @@
           email: email.trim(), label: label, roles: ['member'], invited_by: me.email,
         });
         logActivity('invite', 'staff_members', null, { email: email.trim() });
-        showToast('Added to the team. Now give them a sign-in with the ' +
-                  'Password button on their row.', 'success');
+        showToast('Added to the team, seeing everything but giving. Give them a sign-in with ' +
+                  'Password on their row, and use Access if they need more.', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
       return;
