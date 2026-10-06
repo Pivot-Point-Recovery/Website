@@ -61,10 +61,56 @@
       timeZone: EVENT_TZ, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
       hour: 'numeric', minute: '2-digit' });
   }
+  /** Today -- or the day of `when` -- where the organization is, as
+   *  YYYY-MM-DD. The browser's UTC date is a day ahead every evening after
+   *  8pm Eastern, which marked follow-ups overdue a day early and made
+   *  "Spoken to today" record tomorrow. */
+  function localDate(when) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(when ? new Date(when) : new Date());
+  }
+  /** A calendar day for people: "Tue, Oct 6, 2026". */
+  function dayLine(iso) {
+    return new Date(iso).toLocaleDateString('en-US', {
+      timeZone: EVENT_TZ, weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  /** A typed date as YYYY-MM-DD: '' for blank, null when it is not a date.
+   *  Takes 2026-10-14 and 10/14/2026, the two ways people here write them. */
+  function parseDay(input) {
+    var s = String(input || '').trim();
+    if (!s) return '';
+    var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    var y, mo, d;
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/))) {
+      mo = +m[1]; d = +m[2]; y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+    } else return null;
+    var dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+    return dt.toISOString().slice(0, 10);
+  }
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
+  // The funds on /donate. Older gifts carry only the slug, so the label comes
+  // from here when the gift itself does not have one.
+  var FUND_LABELS = {
+    general: 'Where it’s needed most',
+    'peer-support': 'Peer Recovery Support',
+    reentry: 'Reentry & Reintegration',
+    'veteran-mentorship': 'Veteran Mentorship',
+    'family-community': 'Family & Community',
+  };
   /** The fund as the donor saw it on the page, rather than its slug. */
   function fundName(r) {
-    return (r.metadata && r.metadata.fund_label) || r.fund_designation || 'General fund';
+    return (r.metadata && r.metadata.fund_label) || fundLabel(r.fund_designation);
   }
+  function fundLabel(slug) {
+    return FUND_LABELS[slug] || slug || FUND_LABELS.general;
+  }
+  // The same test the receipt function applies (supabase/functions/_shared/
+  // validate.ts), so the page can say up front that a receipt cannot go.
+  var EMAIL_RE = /^[^\s@,;:<>()[\]\\"]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{1,59})$/;
   /** Stripe's billing address on one line. */
   function addressLine(a) {
     if (!a || typeof a !== 'object') return '';
@@ -153,6 +199,13 @@
           : 'Something with that name or reference already exists. Try a different one.');
       }
       if (res.status === 401 || res.status === 403 || err.code === '42501') throw new Error(NOT_ALLOWED);
+      // Class 22 is "data exception": a date or number Postgres cannot read.
+      // Its own wording ("invalid input syntax for type date") means nothing
+      // to the person who typed it.
+      if (/^22/.test(err.code || '')) {
+        throw new Error('Nothing was saved — one of the values is not in a form the database understands. ' +
+          'Check any dates and numbers.');
+      }
       throw new Error(err.message || 'That did not save. Please try again.');
     }
     if (Array.isArray(data) && data.length === 0) throw new Error(NOT_ALLOWED);
@@ -254,12 +307,13 @@
       '<p class="big">' + esc(big) + '</p><p class="foot">' + (foot || '') + '</p></div>';
   }
   function card(title, note, body, actions) {
-    return '<section class="bc-card"><div class="bc-cardhead"><h3>' + esc(title) + '</h3>' +
+    return '<section class="bc-card"><div class="bc-cardhead"><h2>' + esc(title) + '</h2>' +
       (note ? '<p class="note">' + note + '</p>' : '') + (actions || '') + '</div>' + body + '</section>';
   }
   function table(headRow, bodyRows, emptyMsg) {
     if (!bodyRows) return '<p class="bc-none">' + esc(emptyMsg || 'Nothing here yet.') + '</p>';
-    return '<div class="bc-scroll"><table class="bc-table"><thead><tr>' + headRow +
+    // Focusable so a keyboard can scroll a table wider than the screen.
+    return '<div class="bc-scroll" tabindex="0"><table class="bc-table"><thead><tr>' + headRow +
       '</tr></thead><tbody>' + bodyRows + '</tbody></table></div>';
   }
   var STAGE_STYLE = {
@@ -280,6 +334,12 @@
     var key = String(s || 'new').toLowerCase();
     return '<span class="bc-pill ' + (STAGE_STYLE[key] || 'flat') + '">' +
       esc(STAGE_LABEL[key] || s || 'New') + '</span>';
+  }
+  /** The record's name as a real button: rows open on click anywhere, and
+   *  this is what makes them reachable from the keyboard too. */
+  function rowLink(kind, id, inner) {
+    return '<button type="button" class="nm bc-rowlink" data-drawer="' + kind + '" data-id="' + esc(id) + '">' +
+      inner + '</button>';
   }
   function owner(email) {
     return email
@@ -336,8 +396,16 @@
         s: 'Nobody has been in touch with them yet', w: '', go: 'people', goSub: 'volunteers' });
     }
     if (s.giving.failed > 0) {
-      attn.push({ k: 'warn', sev: 'Watch', t: s.giving.failed + ' payment(s) failed this month',
-        s: 'A donor probably meant to give and could not', w: '', go: 'giving' });
+      attn.push({ k: 'warn', sev: 'Watch',
+        t: plural(s.giving.failed, 'payment', 'payments') + ' failed this month',
+        s: 'A card was declined or a monthly gift did not go through', w: '', go: 'giving' });
+    }
+    // Somebody opened Stripe's page and left. Not a failure -- nothing was
+    // charged -- but sometimes worth a friendly note.
+    if (s.giving.unfinished > 0) {
+      attn.push({ k: '', sev: 'For info',
+        t: plural(s.giving.unfinished, 'gift was', 'gifts were') + ' started but not finished this month',
+        s: 'The donor reached the payment page and left without paying', w: '', go: 'giving' });
     }
     // Every gift is checked against Stripe every 15 minutes, and an abandoned
     // checkout expires after a day -- so anything still waiting past that means
@@ -351,7 +419,8 @@
         w: ago(s.giving.oldest_pending), go: 'giving' });
     }
     if (s.events.drafts > 0) {
-      attn.push({ k: '', sev: 'For info', t: s.events.drafts + ' event(s) still in draft',
+      attn.push({ k: '', sev: 'For info',
+        t: plural(s.events.drafts, 'event is', 'events are') + ' still a draft',
         s: 'Not visible on the website yet', w: '', go: 'events' });
     }
     if (!attn.length) {
@@ -373,7 +442,7 @@
           'Add one under Events.</p>');
 
     var funds = (s.giving.by_fund || []).map(function (f) {
-      return { f: f.fund, v: Number(f.cents), label: money(Number(f.cents)) };
+      return { f: fundLabel(f.fund), v: Number(f.cents), label: money(Number(f.cents)) };
     });
 
     return head('This week', 'Signed in as ' + esc(me.email) + '.') +
@@ -407,7 +476,7 @@
       table('<th>Person</th><th>About</th><th>Stage</th><th>Owner</th><th>Received</th>',
         rows.length ? rows.map(function (r) {
           return '<tr class="click" data-drawer="enquiry" data-id="' + esc(r.id) + '">' +
-            '<td><span class="nm">' + esc(r.name || 'No name given') + '</span>' +
+            '<td>' + rowLink('enquiry', r.id, esc(r.name || 'No name given')) +
             '<span class="sc">' + esc(r.email || '') + '</span></td>' +
             '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.interest || '—') + '</td>' +
             '<td>' + stagePill(r.status) + '</td><td>' + owner(r.owner_email) + '</td>' +
@@ -428,7 +497,7 @@
     return head('People', 'Everyone who has given us their details through the website.') +
       tabs('people') +
       enquiriesCard() +
-      '<div class="bc-gate"><h3>Newsletter sign-ups will land here too</h3>' +
+      '<div class="bc-gate"><h2>Newsletter sign-ups will land here too</h2>' +
       '<p>There is no newsletter sign-up anywhere on the website yet, so there is nothing to collect. ' +
       'Once one exists, its sign-ups appear in this list alongside the contact form, marked by where ' +
       'they came from.</p></div>';
@@ -444,7 +513,7 @@
           rows.length ? rows.map(function (r) {
             var name = [r.first_name, r.last_name].filter(Boolean).join(' ') || 'No name given';
             return '<tr class="click" data-drawer="volunteer" data-id="' + esc(r.id) + '">' +
-              '<td><span class="nm">' + esc(name) + '</span><span class="sc">' + esc(r.email || '') + '</span></td>' +
+              '<td>' + rowLink('volunteer', r.id, esc(name)) + '<span class="sc">' + esc(r.email || '') + '</span></td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.city || '—') + '</td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc((r.interests || []).join(', ') || '—') + '</td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.availability || '—') + '</td>' +
@@ -454,8 +523,9 @@
 
   function peopleIntake() {
     var rows = cache.intake || [];
+    var today = localDate();
     var overdue = rows.filter(function (r) {
-      return r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < new Date().toISOString().slice(0, 10);
+      return r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < today;
     }).length;
     return head('People', 'The intake work queue — reference numbers, stages and follow-up dates.',
         '<button class="btn btn-primary btn-small" data-intake-new="1">+ Add to the queue</button>') +
@@ -468,22 +538,43 @@
           summary.intake.median_days_to_contact != null ? days(summary.intake.median_days_to_contact) : '—',
           'Last 90 days, against a 1–2 day promise') +
       '</div>' +
-      '<div class="bc-gate"><h3>No intake answers are stored here, by design</h3>' +
+      '<div class="bc-gate"><h2>No intake answers are stored here, by design</h2>' +
       '<p>Intake responses are protected under 42 CFR Part 2 and HIPAA and stay in the system that collects ' +
       'them. This queue holds a reference number, a stage and a follow-up date — enough to run the work and to ' +
       'tell the board how fast we answer, and no part of anybody&rsquo;s story.</p></div>' +
       card('The queue', rows.length + (rows.length === 1 ? ' entry' : ' entries'),
         table('<th>Reference</th><th>Received</th><th>Stage</th><th>Owner</th><th>Follow-up due</th>',
           rows.length ? rows.map(function (r) {
-            var late = r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < new Date().toISOString().slice(0, 10);
+            var late = r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < today;
             return '<tr class="click" data-drawer="intake" data-id="' + esc(r.id) + '">' +
-              '<td><span class="nm" style="font-variant-numeric:tabular-nums">' + esc(r.ref) + '</span></td>' +
+              '<td>' + rowLink('intake', r.id, '<span style="font-variant-numeric:tabular-nums">' + esc(r.ref) + '</span>') + '</td>' +
               '<td class="ago">' + esc(ago(r.received_at)) + '</td>' +
               '<td>' + stagePill(r.stage) + '</td><td>' + owner(r.owner_email) + '</td>' +
               '<td style="font-size:.85rem;' + (late ? 'color:var(--bc-stop-fg);font-weight:600' : 'color:var(--color-text-mid)') + '">' +
               esc(r.follow_up_due || '—') + '</td></tr>';
           }).join('') : '',
           'The queue is empty. Add an entry each time an intake form comes in.'));
+  }
+
+  /** What a set of roles amounts to, in the words the page uses. */
+  function accessPills(roles) {
+    roles = roles || [];
+    var giving = roles.indexOf('finance') !== -1;
+    return '<span class="bc-pill info" style="margin-right:.2rem">' +
+        (giving ? 'Everything' : 'Everything but giving') + '</span>' +
+      (roles.indexOf('admin') !== -1
+        ? '<span class="bc-pill warn" style="margin-right:.2rem">Manage access</span>' : '');
+  }
+  /** "Erica and Steve": the active people holding a role, by first name. */
+  function whoHas(role) {
+    var names = (cache.team || []).filter(function (t) {
+      return t.active && (t.roles || []).indexOf(role) !== -1;
+    }).map(function (t) {
+      return String(t.label || t.email.split('@')[0]).split(/\s+[–—-]\s+/)[0];
+    });
+    if (!names.length) return 'nobody yet';
+    return names.length === 1 ? names[0]
+      : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
   }
 
   function peopleTeam() {
@@ -494,39 +585,49 @@
       card('People with access', rows.length + (rows.length === 1 ? ' account' : ' accounts'),
         table('<th>Person</th><th>Can see</th><th>Status</th>' + (me.canAdmin ? '<th>Account</th>' : ''),
           rows.length ? rows.map(function (r) {
-            var roleLabels = (r.roles || []).map(function (x) {
-              return { member: 'Everything but giving', finance: 'Giving', admin: 'Manage access' }[x] || x;
-            });
-            return '<tr><td><span class="nm">' + esc(r.label || r.email) + '</span>' +
+            var name = esc(r.label || r.email);
+            // No row-wide click here: the row's own buttons (Password, Switch
+            // off) would open the drawer instead of doing their job.
+            return '<tr><td>' + (me.canAdmin ? rowLink('person', r.id, name) : '<span class="nm">' + name + '</span>') +
               '<span class="sc">' + esc(r.email) + '</span></td>' +
-              '<td>' + roleLabels.map(function (l) {
-                return '<span class="bc-pill info" style="margin-right:.2rem">' + esc(l) + '</span>'; }).join('') + '</td>' +
+              '<td>' + accessPills(r.roles) + '</td>' +
               '<td>' + (r.active ? '<span class="bc-pill ok">Active</span>' : '<span class="bc-pill flat">Switched off</span>') + '</td>' +
               (me.canAdmin
                 ? '<td class="r" style="white-space:nowrap">' +
+                  '<button class="btn btn-blue btn-small" data-drawer="person" data-id="' + esc(r.id) + '">Access</button> ' +
                   '<button class="btn btn-outline btn-small" data-team-password="' + esc(r.email) + '">Password</button> ' +
-                  '<button class="btn btn-ghost btn-small" data-team-toggle="' + esc(r.id) + '" ' +
-                  'data-active="' + (r.active ? '1' : '0') + '">' + (r.active ? 'Switch off' : 'Switch on') + '</button></td>'
+                  // Switching yourself off locks you out with nobody to let
+                  // you back in, so your own row does not offer it.
+                  (String(r.email).toLowerCase() === me.jwtEmail
+                    ? '<span style="font-size:.82rem;color:var(--bc-ink-soft);padding:0 .6rem">That’s you</span>'
+                    : '<button class="btn btn-ghost btn-small" data-team-toggle="' + esc(r.id) + '" ' +
+                      'data-active="' + (r.active ? '1' : '0') + '" data-label="' + esc(r.label || r.email) + '">' +
+                      (r.active ? 'Switch off' : 'Switch on') + '</button>') + '</td>'
                 : '') + '</tr>';
           }).join('') : '', 'Nobody yet.')) +
       (me.canAdmin
-        ? '<div class="bc-gate"><h3>Giving is limited to Erica and Steve</h3><p>Everyone invited sees ' +
-          'everything else — enquiries, volunteers, the intake queue, events and documents. Adding ' +
-          '<em>Giving</em> to somebody lets them see donor names and amounts, so it stays with the executive ' +
-          'director and the treasurer unless the board decides otherwise.</p></div>'
+        ? '<div class="bc-gate"><h2>Giving is limited to ' + esc(whoHas('finance')) + '</h2><p>Everyone invited ' +
+          'sees everything else — enquiries, volunteers, the intake queue, events and documents. ' +
+          '<em>Giving</em> adds donor names, contact details, amounts and notes, so keep it with the people who ' +
+          'acknowledge gifts and reconcile the bank unless the board decides otherwise. Choose ' +
+          '<strong>Access</strong> on anybody’s row to change what they can see.</p></div>'
         : '');
   }
 
   V.giving = function () {
     var s = summary;
     var funds = (s.giving.by_fund || []).map(function (f) {
-      return { f: f.fund, v: Number(f.cents), label: money(Number(f.cents)) };
+      return { f: fundLabel(f.fund), v: Number(f.cents), label: money(Number(f.cents)) };
     });
+    var unfinished = s.giving.unfinished || 0;
     var tiles = '<div class="bc-grid bc-g4">' +
-      tile('This month', money(s.giving.month_cents), s.giving.gift_count + ' gifts') +
+      tile('This month', money(s.giving.month_cents), plural(s.giving.gift_count, 'gift', 'gifts')) +
       tile('This year', money(s.giving.year_cents), 'Since 1 January') +
       tile('Recurring donors', String(s.giving.recurring), 'Monthly gifts on file') +
-      tile('Failed payments', String(s.giving.failed), s.giving.failed ? 'Worth a nudge' : 'None this month', s.giving.failed > 0) +
+      tile('Failed payments', String(s.giving.failed),
+        s.giving.failed ? 'Worth a nudge'
+          : unfinished ? plural(unfinished, 'checkout', 'checkouts') + ' started and not finished'
+          : 'None this month', s.giving.failed > 0) +
       '</div>';
 
     if (!me.canGiving) {
@@ -534,7 +635,7 @@
         '<div class="bc-split"><div>' +
         (funds.length ? card('By fund', 'This month', hbars(funds, 'Total', money(s.giving.month_cents)))
                       : card('By fund', 'This month', '<p class="bc-none">No gifts recorded this month.</p>')) +
-        '</div><div><div class="bc-gate"><h3>Donor names are limited to Erica and Steve</h3>' +
+        '</div><div><div class="bc-gate"><h2>Donor names are limited to ' + esc(whoHas('finance')) + '</h2>' +
         '<p>Who gave and how much stays with the executive director and the treasurer, who acknowledge gifts ' +
         'and reconcile the bank. The totals above are the same ones they see, and are what the board reports ' +
         'on.</p><p style="font-size:.83rem;color:var(--bc-ink-soft)">Enforced in the database, not by hiding ' +
@@ -546,28 +647,25 @@
     return head('Giving', 'Every gift, and every attempt that did not complete. Open one for the donor’s details.',
         '<button class="btn btn-outline btn-small" data-export="gifts">Download as spreadsheet</button>') + tiles +
       (owed.length
-        ? '<div class="bc-gate"><h3>' + owed.length + (owed.length === 1 ? ' gift has' : ' gifts have') +
-          ' no receipt yet</h3><p>The donor has not been sent their tax acknowledgement — usually because the ' +
+        ? '<div class="bc-gate"><h2>' + owed.length + (owed.length === 1 ? ' gift has' : ' gifts have') +
+          ' no receipt yet</h2><p>The donor has not been sent their tax acknowledgement — usually because the ' +
           'gift was found after the fact rather than recorded as it happened. Open each one to send it. A donor ' +
           'who gave $250 or more needs it to claim the deduction.</p></div>'
         : '') +
-      '<div class="bc-split"><div>' +
       card('Recent gifts', rows.length + ' shown',
         table('<th>Donor</th><th>Fund</th><th>Type</th><th>Amount</th><th>Status</th>',
           rows.length ? rows.map(function (r) {
             return '<tr class="click" data-drawer="gift" data-id="' + esc(r.id) + '">' +
-              '<td><span class="nm">' + esc(r.donor_name || 'Anonymous') +
-              (r.donor_note ? ' <span class="bc-pill info" title="Left a note">Note</span>' : '') + '</span>' +
+              '<td>' + rowLink('gift', r.id, esc(r.donor_name || 'Anonymous') +
+              (r.donor_note ? ' <span class="bc-pill info" title="Left a note">Note</span>' : '')) +
               '<span class="sc">' + esc([r.donor_email, ago(r.created_at)].filter(Boolean).join(' · ')) + '</span></td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(fundName(r)) + '</td>' +
               '<td><span class="bc-pill flat">' + (r.is_recurring ? 'Monthly' : 'One-time') + '</span></td>' +
               '<td class="r" style="font-weight:600">' + esc(money(r.amount_cents)) + '</td>' +
               '<td>' + stagePill(r.status) + '</td></tr>';
           }).join('') : '', 'No gifts recorded yet.')) +
-      '</div><div>' +
       (funds.length ? card('By fund', 'This month', hbars(funds, 'Total', money(s.giving.month_cents)))
-                    : card('By fund', 'This month', '<p class="bc-none">No gifts this month.</p>')) +
-      '</div></div>';
+                    : card('By fund', 'This month', '<p class="bc-none">No gifts this month.</p>'));
   };
 
   V.boardroom = function () {
@@ -581,7 +679,7 @@
     var cats = Object.keys(byCat).sort();
 
     var driveCard = drives.length
-      ? '<section class="bc-card"><div class="bc-cardhead"><h3>Shared drive</h3>' +
+      ? '<section class="bc-card"><div class="bc-cardhead"><h2>Shared drive</h2>' +
         '<p class="note">Everything the team works on, in Google Drive</p></div>' +
         '<div class="bc-pad" style="display:flex;flex-direction:column;gap:.75rem">' +
         drives.map(function (d) {
@@ -604,7 +702,8 @@
       tabs('boardroom') + driveCard +
       (cats.length ? cats.map(function (c) {
         return card(c, byCat[c].length + (byCat[c].length === 1 ? ' item' : ' items'),
-          table('<th>Name</th><th>Added by</th><th>Added</th>' + (me.canAdmin ? '<th></th>' : ''),
+          table('<th>Name</th><th>Added by</th><th>Added</th>' +
+              (me.canAdmin ? '<th><span class="bc-sr">Actions</span></th>' : ''),
             byCat[c].map(function (r) {
               return '<tr><td><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' +
                 esc(r.label) + '</a>' + (r.is_folder ? ' <span class="bc-pill flat">Folder</span>' : '') + '</td>' +
@@ -617,7 +716,7 @@
             }).join('')));
       }).join('') : (drives.length ? '' : card('Documents', null, '<p class="bc-none">No links yet. ' +
           'Add a link to a Drive folder or file and it appears here for everyone on the team.</p>'))) +
-      '<div class="bc-gate"><h3>These are links, not copies</h3><p>Files stay in Drive, so Google keeps ' +
+      '<div class="bc-gate"><h2>These are links, not copies</h2><p>Files stay in Drive, so Google keeps ' +
       'doing the sharing, version history and virus scanning, and no board paper ends up in a second place ' +
       'you have to secure. Nothing is uploaded through this page.</p>' +
       '<p style="font-size:.83rem;color:var(--bc-ink-soft)">One thing worth checking in Google: a folder ' +
@@ -669,9 +768,9 @@
       var where = [ev.location_name, ev.city].filter(Boolean).join(' · ');
       var count = (ev.rsvp_count == null) ? '' : ' (' + ev.rsvp_count + ')';
       return '<div class="admin-card">' +
-        '<h3>' + esc(ev.title || 'Untitled') +
+        '<h2>' + esc(ev.title || 'Untitled') +
           '<span class="admin-pill ' + (ev.published ? 'live' : 'draft') + '">' +
-          (ev.published ? 'Published' : 'Draft') + '</span></h3>' +
+          (ev.published ? 'Published' : 'Draft') + '</span></h2>' +
         '<p class="admin-meta">' + esc(when) + (where ? ' — ' + esc(where) : '') + '</p>' +
         '<div class="admin-actions">' +
           '<button class="btn btn-blue btn-small" data-edit="' + esc(ev.id) + '">Edit</button>' +
@@ -897,9 +996,14 @@
   }
 
   // ---------------------------------------------------------------- drawer
+  // Where focus was before the drawer opened, so closing it puts a keyboard
+  // user back on the row they came from rather than at the top of the page.
+  var drawerReturn = null;
   function openDrawer(html) {
     var d = $('bcDrawer');
+    if (!d.classList.contains('on')) drawerReturn = document.activeElement;
     d.innerHTML = html;
+    d.inert = false;
     d.classList.add('on');
     d.setAttribute('aria-hidden', 'false');
     $('bcScrim').classList.add('on');
@@ -907,9 +1011,15 @@
     if (x) x.focus();
   }
   function closeDrawer() {
-    $('bcDrawer').classList.remove('on');
-    $('bcDrawer').setAttribute('aria-hidden', 'true');
+    var d = $('bcDrawer');
+    var wasOpen = d.classList.contains('on');
+    d.classList.remove('on');
+    d.setAttribute('aria-hidden', 'true');
+    // Off-screen is not gone: without this its buttons stay in the tab order.
+    d.inert = true;
     $('bcScrim').classList.remove('on');
+    if (wasOpen && drawerReturn && document.contains(drawerReturn)) drawerReturn.focus();
+    drawerReturn = null;
   }
   function dhead(title, subtitle, pill) {
     return '<div class="bc-dhead"><div style="display:flex;flex-direction:column;gap:.2rem;min-width:0">' +
@@ -932,8 +1042,7 @@
     var id = rec.id;
     var team = (cache.team || []).filter(function (t) { return t.active; });
     var current = String(rec.owner_email || '').toLowerCase();
-    var contacted = rec.first_contact_at
-      ? new Date(rec.first_contact_at).toISOString().slice(0, 10) : '';
+    var contacted = rec.first_contact_at ? localDate(rec.first_contact_at) : '';
 
     var options = '<option value=""' + (current ? '' : ' selected') + '>Nobody yet</option>' +
       team.map(function (t) {
@@ -946,7 +1055,7 @@
       return n.entity === entity && String(n.entity_id) === String(id);
     });
 
-    return '<div class="bc-dsec"><h4>Who is on it</h4>' +
+    return '<div class="bc-dsec"><h3>Who is on it</h3>' +
       '<div style="display:flex;flex-direction:column;gap:.7rem">' +
       '<label style="display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;color:var(--bc-ink-soft)">' +
       'Assigned to' +
@@ -966,7 +1075,7 @@
       '<button class="btn btn-outline btn-small" data-work-today="1">Spoken to today</button>' +
       '</div></div></div>' +
 
-      '<div class="bc-dsec"><h4>Notes from the team</h4>' +
+      '<div class="bc-dsec"><h3>Notes from the team</h3>' +
       (notes.length ? notes.map(function (n) {
         return '<div class="bc-note"><span>' + esc(n.body) + '</span>' +
           '<span class="who">' + esc(String(n.author_email || '').split('@')[0]) + ' · ' + esc(ago(n.created_at)) + '</span></div>';
@@ -985,15 +1094,15 @@
       if (!r) return '';
       logActivity('read', 'contact_submissions', id);
       return dhead(r.name || 'No name given', 'Arrived ' + ago(r.created_at), stagePill(r.status)) +
-        '<div class="bc-dsec"><h4>Stage</h4>' +
+        '<div class="bc-dsec"><h3>Stage</h3>' +
         stageButtons('contact_submissions', id, ['new', 'contacted', 'referred', 'closed'], r.status || 'new') + '</div>' +
-        '<div class="bc-dsec"><h4>How to reach them</h4><dl class="bc-kv">' +
+        '<div class="bc-dsec"><h3>How to reach them</h3><dl class="bc-kv">' +
         '<dt>Email</dt><dd><a href="mailto:' + esc(r.email) + '">' + esc(r.email || '—') + '</a></dd>' +
         '<dt>Phone</dt><dd>' + esc(r.phone || '—') + '</dd>' +
         '<dt>About</dt><dd>' + esc(r.interest || '—') + '</dd>' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
-        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
-        '<div class="bc-dsec"><h4>What they wrote</h4><div class="bc-quote">' + esc(r.message || '(nothing)') + '</div>' +
+        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(dayLine(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
+        '<div class="bc-dsec"><h3>What they wrote</h3><div class="bc-quote">' + esc(r.message || '(nothing)') + '</div>' +
         '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Never edited, by anybody. ' +
         'Everything the team adds is a separate note below.</p></div>' +
         workBlock('contact_submissions', r);
@@ -1004,17 +1113,17 @@
       logActivity('read', 'volunteer_interests', id);
       var name = [r.first_name, r.last_name].filter(Boolean).join(' ') || 'No name given';
       return dhead(name, 'Signed up ' + ago(r.created_at), stagePill(r.status)) +
-        '<div class="bc-dsec"><h4>Stage</h4>' +
+        '<div class="bc-dsec"><h3>Stage</h3>' +
         stageButtons('volunteer_interests', id, ['new', 'screened', 'onboarding', 'active', 'inactive'], r.status || 'new') + '</div>' +
-        '<div class="bc-dsec"><h4>Details</h4><dl class="bc-kv">' +
+        '<div class="bc-dsec"><h3>Details</h3><dl class="bc-kv">' +
         '<dt>Email</dt><dd><a href="mailto:' + esc(r.email) + '">' + esc(r.email || '—') + '</a></dd>' +
         '<dt>Phone</dt><dd>' + esc(r.phone || '—') + '</dd>' +
         '<dt>Town</dt><dd>' + esc(r.city || '—') + '</dd>' +
         '<dt>Interests</dt><dd>' + esc((r.interests || []).join(', ') || '—') + '</dd>' +
         '<dt>Available</dt><dd>' + esc(r.availability || '—') + '</dd>' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
-        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
-        (r.experience ? '<div class="bc-dsec"><h4>What they told us</h4>' +
+        '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(dayLine(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
+        (r.experience ? '<div class="bc-dsec"><h3>What they told us</h3>' +
           '<div class="bc-quote">' + esc(r.experience) + '</div></div>' : '') +
         workBlock('volunteer_interests', r);
     },
@@ -1023,13 +1132,13 @@
       if (!r) return '';
       logActivity('read', 'intake_queue', id, { ref: r.ref });
       return dhead(r.ref, 'Received ' + ago(r.received_at), stagePill(r.stage)) +
-        '<div class="bc-dsec"><h4>Stage</h4>' +
+        '<div class="bc-dsec"><h3>Stage</h3>' +
         stageButtons('intake_queue', id, ['awaiting_contact', 'in_assessment', 'enrolled', 'closed'], r.stage) + '</div>' +
-        '<div class="bc-dsec"><h4>The work, not the answers</h4><dl class="bc-kv">' +
+        '<div class="bc-dsec"><h3>The work, not the answers</h3><dl class="bc-kv">' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
         '<dt>Follow-up</dt><dd>' + esc(r.follow_up_due || 'not set') + '</dd>' +
-        '<dt>First contact</dt><dd>' + (r.first_contact_at ? esc(ago(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
-        '<div class="bc-dsec"><h4>The record itself</h4>' +
+        '<dt>First contact</dt><dd>' + (r.first_contact_at ? esc(dayLine(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
+        '<div class="bc-dsec"><h3>The record itself</h3>' +
         '<div class="bc-quote">This queue holds a reference number, a stage and a follow-up date. What the ' +
         'person wrote lives in the system that collected it, under 42 CFR Part 2.</div>' +
         (r.source_url ? '<div class="bc-actions"><a class="btn btn-outline btn-small" href="' + esc(r.source_url) +
@@ -1049,6 +1158,10 @@
       var address = addressLine(r.donor_address);
       var phoneDigits = String(r.donor_phone || '').replace(/[^\d+]/g, '');
       var completed = r.status === 'succeeded';
+      // A typo'd address (a comma for a dot, say) would only bounce, and the
+      // receipt function refuses it anyway -- so say so instead of offering
+      // a button that cannot work.
+      var mistyped = Boolean(r.donor_email) && !EMAIL_RE.test(r.donor_email);
       var receipt = !completed ? 'Not applicable — the payment did not complete'
         : r.receipt_sent_at ? 'Sent ' + ago(r.receipt_sent_at)
         : 'Not sent';
@@ -1057,22 +1170,26 @@
       return dhead(r.donor_name || 'Anonymous',
           money(r.amount_cents) + (r.is_recurring ? ' a month' : '') + ' · ' + whenLine(r.created_at),
           stagePill(r.status)) +
-        '<div class="bc-dsec"><h4>How to reach them</h4><dl class="bc-kv">' +
+        '<div class="bc-dsec"><h3>How to reach them</h3><dl class="bc-kv">' +
         '<dt>Email</dt><dd>' + (r.donor_email
           ? '<a href="mailto:' + esc(r.donor_email) + '">' + esc(r.donor_email) + '</a>' : '—') + '</dd>' +
         '<dt>Phone</dt><dd>' + (phoneDigits
           ? '<a href="tel:' + esc(phoneDigits) + '">' + esc(r.donor_phone) + '</a>' : '—') + '</dd>' +
         '<dt>Address</dt><dd>' + (address ? esc(address) : '—') + '</dd></dl></div>' +
         (r.donor_note
-          ? '<div class="bc-dsec"><h4>Their note</h4><div class="bc-quote">' + esc(r.donor_note) + '</div></div>'
+          ? '<div class="bc-dsec"><h3>Their note</h3><div class="bc-quote">' + esc(r.donor_note) + '</div></div>'
           : '') +
-        '<div class="bc-dsec"><h4>The gift</h4><dl class="bc-kv">' +
+        '<div class="bc-dsec"><h3>The gift</h3><dl class="bc-kv">' +
         '<dt>Fund</dt><dd>' + esc(fundName(r)) + '</dd>' +
         '<dt>Type</dt><dd>' + (r.is_recurring ? 'Monthly' : 'One-time') + '</dd>' +
         '<dt>Employer match</dt><dd>' + (r.employer_match ? 'Yes — their employer’s form will follow' : 'No') + '</dd>' +
         '<dt>Receipt</dt><dd>' + esc(receipt) + '</dd></dl>' +
+        (completed && mistyped
+          ? '<p class="bc-warnline">This email address looks mistyped, so a receipt cannot be sent to it. ' +
+            'Check the address with the donor — Stripe has the same one on the payment.</p>'
+          : '') +
         '<div class="bc-actions">' +
-        (completed && r.donor_email
+        (completed && r.donor_email && !mistyped
           ? '<button class="btn ' + (r.receipt_sent_at ? 'btn-outline' : 'btn-primary') + ' btn-small" ' +
             'data-send-receipt="' + esc(r.id) + '">' + (r.receipt_sent_at ? 'Send receipt again' : 'Send receipt') +
             '</button>'
@@ -1081,6 +1198,49 @@
           ? '<a class="btn btn-outline btn-small" href="' + esc(stripeUrl) + '" target="_blank" rel="noopener">Open in Stripe</a>'
           : '') +
         '</div></div>';
+    },
+    /** One person's access. Admins only -- and the database, not this
+     *  drawer, is what stops anybody else changing it (staff_admin_write),
+     *  or the last person with Manage access from losing it. */
+    person: function (id) {
+      var r = (cache.team || []).filter(function (x) { return x.id === id; })[0];
+      if (!r || !me.canAdmin) return '';
+      var roles = r.roles || [];
+      var self = String(r.email).toLowerCase() === me.jwtEmail;
+      function option(role, title, detail, locked) {
+        return '<label style="display:flex;gap:.65rem;align-items:flex-start;font-size:.88rem;cursor:' +
+          (locked ? 'default' : 'pointer') + '">' +
+          '<input type="checkbox" id="pm-' + role + '" data-role="' + role + '"' +
+          (roles.indexOf(role) !== -1 ? ' checked' : '') + (locked ? ' disabled' : '') +
+          ' style="margin-top:.25rem;width:1.05rem;height:1.05rem;flex:none">' +
+          '<span><strong style="display:block">' + esc(title) + '</strong>' +
+          '<span style="color:var(--color-text-mid)">' + detail + '</span></span></label>';
+      }
+      return dhead(r.label || r.email, r.email,
+          r.active ? '<span class="bc-pill ok">Active</span>' : '<span class="bc-pill flat">Switched off</span>') +
+        '<div class="bc-dsec"><h3>What they can see</h3>' +
+        '<p style="font-size:.86rem;color:var(--color-text-mid);margin:0">Everybody who can sign in sees ' +
+        'enquiries, volunteers, the intake queue, events and the board room.</p>' +
+        option('finance', 'Giving', 'Donor names, emails, phone numbers, addresses, amounts and notes — and ' +
+          'sending receipts.') +
+        option('admin', 'Manage access', 'Invite people, set passwords, switch accounts off, and change what ' +
+          'everybody can see — including this.', self) +
+        (self
+          ? '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">You cannot take Manage access away ' +
+            'from yourself. Another person with it can.</p>'
+          : '') +
+        '</div>' +
+        '<div class="bc-dsec"><h3>Name on this page</h3>' +
+        '<input type="text" id="pmLabel" maxlength="80" value="' + esc(r.label || '') + '" ' +
+        'aria-label="Name on this page" placeholder="' + esc(r.email) + '" ' +
+        'style="font-family:var(--font-body);font-size:.9rem;padding:.45rem .55rem;' +
+        'border:1px solid var(--color-border);border-radius:8px;width:100%">' +
+        '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">For example “Grant – board”. ' +
+        'It is how they appear in lists and the owner picker.</p></div>' +
+        '<div class="bc-dsec"><div class="bc-actions">' +
+        '<button class="btn btn-blue btn-small" data-person-save="' + esc(r.id) + '">Save</button></div>' +
+        '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Takes effect the next time they open ' +
+        'or refresh a page. Every change is written to the activity log.</p></div>';
     },
   };
 
@@ -1145,11 +1305,16 @@
       if (view === 'events') { content.innerHTML = V.events(); await loadEvents(); renderNav(); return; }
       content.innerHTML = (V[view] || V.dashboard)();
     } catch (err) {
-      content.innerHTML = '<div class="bc-gate hard"><h3>Could not load that</h3><p>' +
+      content.innerHTML = '<div class="bc-gate hard"><h2>Could not load that</h2><p>' +
         esc(err.message || 'Something went wrong.') + '</p><p style="font-size:.83rem">If this keeps ' +
         'happening, your account may not have access to this section yet.</p></div>';
     }
     renderNav();
+  }
+
+  function refocusRow(id) {
+    var b = document.querySelector('.bc-rowlink[data-id="' + CSS.escape(String(id)) + '"]');
+    if (b) b.focus();
   }
 
   function go(nextView, nextSub) {
@@ -1209,6 +1374,7 @@
         summary = null;
         closeDrawer();
         await render();
+        refocusRow(btn.dataset.id);
       } catch (err) { showToast(err.message, 'error'); }
       return;
     }
@@ -1216,7 +1382,7 @@
     // ---- who is on it, and when they were spoken to
     if (btn && btn.dataset.workToday) {
       var d = $('wbContacted');
-      if (d) d.value = new Date().toISOString().slice(0, 10);
+      if (d) d.value = localDate();
       return;
     }
     if (btn && btn.dataset.workSave) {
@@ -1224,9 +1390,9 @@
       var dateVal = ($('wbContacted') && $('wbContacted').value) || '';
       var patch = {
         owner_email: ownerVal || null,
-        // A date with no time means noon local, not midnight UTC, so a
+        // A date with no time means noon Eastern, not midnight UTC, so a
         // back-dated entry does not slide to the day before.
-        first_contact_at: dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : null,
+        first_contact_at: dateVal ? timestampFor(dateVal, '12:00') : null,
       };
       try {
         await writeRows(REST + '/' + btn.dataset.workEntity + '?id=eq.' +
@@ -1238,6 +1404,7 @@
         summary = null;
         closeDrawer();
         await render();
+        refocusRow(btn.dataset.workSave);
       } catch (err) { showToast(err.message, 'error'); }
       return;
     }
@@ -1247,13 +1414,17 @@
       var body = ($('noteBody') && $('noteBody').value || '').trim();
       if (!body) { showToast('Write the note first.', 'error'); return; }
       try {
-        await writeRows(REST + '/record_notes', 'POST', {
+        var note = await writeRows(REST + '/record_notes', 'POST', {
           entity: btn.dataset.noteEntity, entity_id: btn.dataset.noteAdd,
           body: body, author_email: me.jwtEmail,
         });
+        // The note's text stays out of the log; the log says one was written.
+        logActivity('note', btn.dataset.noteEntity, btn.dataset.noteAdd,
+          { note_id: note && note[0] && note[0].id });
         showToast('Note added.', 'success');
         closeDrawer();
         await render();
+        refocusRow(btn.dataset.noteAdd);
       } catch (err) { showToast(err.message, 'error'); }
       return;
     }
@@ -1287,15 +1458,69 @@
       return;
     }
 
+    // ---- team: what somebody can see
+    if (btn && btn.dataset.personSave) {
+      var pid = btn.dataset.personSave;
+      var person = (cache.team || []).filter(function (x) { return x.id === pid; })[0];
+      if (!person) return;
+      var had = person.roles || [];
+      var roles = ['member'];
+      ['finance', 'admin'].forEach(function (role) {
+        var box = $('pm-' + role);
+        // A disabled box (your own Manage access) keeps what it had.
+        if (box ? box.checked : had.indexOf(role) !== -1) roles.push(role);
+      });
+      var newLabel = (($('pmLabel') && $('pmLabel').value) || '').trim() || null;
+      var who = newLabel || person.label || person.email;
+      var gaining = roles.filter(function (x) { return x !== 'member' && had.indexOf(x) === -1; });
+      if (gaining.length) {
+        var what = gaining.map(function (x) {
+          return x === 'finance'
+            ? 'see every donor’s name, contact details, gifts and notes'
+            : 'invite people, set passwords and change what everybody can see';
+        }).join(', and ');
+        if (!confirm('Let ' + who + ' ' + what + '?')) return;
+      }
+      btn.disabled = true;
+      try {
+        await writeRows(REST + '/staff_members?id=eq.' + encodeURIComponent(pid), 'PATCH',
+          { roles: roles, label: newLabel });
+        logActivity('update', 'staff_members', pid, { roles: roles, previous_roles: had, label: newLabel });
+        showToast('Saved — ' + who + ' can now see ' +
+          (roles.indexOf('finance') !== -1 ? 'everything' : 'everything but giving') +
+          (roles.indexOf('admin') !== -1 ? ', and manage access.' : '.'), 'success');
+        if (String(person.email).toLowerCase() === me.jwtEmail) {
+          me.roles = roles;
+          me.canGiving = roles.indexOf('finance') !== -1;
+          me.canAdmin = roles.indexOf('admin') !== -1;
+          $('bcRole').textContent = me.canAdmin ? 'Administrator' : me.canGiving ? 'Giving access' : 'Team';
+        }
+        closeDrawer();
+        await render();
+        refocusRow(pid);
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+      }
+      return;
+    }
+
     // ---- intake: add to the queue
     if (btn && btn.dataset.intakeNew) {
       var ref = prompt('Reference number for this intake (no names, please):');
       if (!ref) return;
-      var due = prompt('Follow-up due date (YYYY-MM-DD), or leave blank:', '');
+      var due = prompt('Follow-up due date (for example 2026-10-14 or 10/14/2026), or leave blank:', '');
+      if (due === null) return;
+      var dueDay = parseDay(due);
+      if (dueDay === null) {
+        showToast('"' + due.trim() + '" is not a date this can read. Use 2026-10-14 or 10/14/2026.', 'error');
+        return;
+      }
       try {
-        await writeRows(REST + '/intake_queue', 'POST', {
-          ref: ref.trim(), follow_up_due: (due || '').trim() || null, created_by: me.email,
+        var made = await writeRows(REST + '/intake_queue', 'POST', {
+          ref: ref.trim(), follow_up_due: dueDay || null, created_by: me.email,
         });
+        logActivity('create', 'intake_queue', made && made[0] && made[0].id, { ref: ref.trim() });
         showToast('Added to the queue.', 'success');
         summary = null;
         await render();
@@ -1356,14 +1581,16 @@
           email: email.trim(), label: label, roles: ['member'], invited_by: me.email,
         });
         logActivity('invite', 'staff_members', null, { email: email.trim() });
-        showToast('Added to the team. Now give them a sign-in with the ' +
-                  'Password button on their row.', 'success');
+        showToast('Added to the team, seeing everything but giving. Give them a sign-in with ' +
+                  'Password on their row, and use Access if they need more.', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
       return;
     }
     if (btn && btn.dataset.teamToggle) {
       var makeActive = btn.dataset.active !== '1';
+      if (!makeActive && !confirm('Switch off ' + (btn.dataset.label || 'this account') + '? ' +
+                                  'They lose access straight away. You can switch them back on.')) return;
       try {
         await writeRows(REST + '/staff_members?id=eq.' + encodeURIComponent(btn.dataset.teamToggle),
           'PATCH', { active: makeActive });
@@ -1383,10 +1610,11 @@
       if (!/^https:\/\//i.test(durl.trim())) { showToast('The link needs to start with https://', 'error'); return; }
       var dcat = prompt('Which section should it sit under?', 'Board packets') || 'General';
       try {
-        await writeRows(REST + '/board_documents', 'POST', {
+        var doc = await writeRows(REST + '/board_documents', 'POST', {
           label: dlabel.trim(), url: durl.trim(), category: dcat.trim(),
           is_folder: /\/folders\//.test(durl), added_by: me.email,
         });
+        logActivity('create', 'board_documents', doc && doc[0] && doc[0].id, { label: dlabel.trim() });
         showToast('Link added.', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
@@ -1395,7 +1623,8 @@
     if (btn && btn.dataset.docDel) {
       if (!confirm('Remove this link? The file itself stays in Drive.')) return;
       try {
-        await writeRows(REST + '/board_documents?id=eq.' + encodeURIComponent(btn.dataset.docDel), 'DELETE', null);
+        var gone = await writeRows(REST + '/board_documents?id=eq.' + encodeURIComponent(btn.dataset.docDel), 'DELETE', null);
+        logActivity('delete', 'board_documents', btn.dataset.docDel, { label: gone && gone[0] && gone[0].label });
         showToast('Link removed.', 'success');
         await render();
       } catch (err) { showToast(err.message, 'error'); }
@@ -1460,6 +1689,7 @@
       $('loginView').hidden = false;
       $('loginNote').textContent = 'That account is signed in but is not on the list of people allowed in. ' +
         'Ask Erica to add you.';
+      $('loginNote').hidden = false;
       saveSession(null);
       return;
     }

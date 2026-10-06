@@ -7,11 +7,12 @@
 
 :root {
   --bc-sidebar: 244px;
-  --bc-ink-soft: #78849b;
+  --bc-ink-soft: #5f6b81;   /* 5.4:1 on white, 4.8:1 on --bc-sunk */
   --bc-sunk: #f0f2f5;
   --bc-navy-2: #22375c;
   --bc-navy-line: #2e4568;
   --bc-navy-ink: #c3d2e6;
+  --bc-navy-soft: #97a8c1;  /* small print on navy: 5.8:1 */
   --bc-ok-bg: #e6f4ea;      --bc-ok-fg: #1c6b36;
   --bc-warn-bg: #fdf1dc;    --bc-warn-fg: #7d5100;
   --bc-stop-bg: #fdeceb;    --bc-stop-fg: #a8291f;
@@ -32,13 +33,13 @@
   font-family: var(--font-display); text-transform: uppercase; color: #fff;
   font-size: .98rem; letter-spacing: .03em; font-weight: 600;
 }
-.bc-brand .t span { font-size: .72rem; color: #7f92ae; }
+.bc-brand .t span { font-size: .72rem; color: var(--bc-navy-soft); }
 
 .bc-nav { display: flex; flex-direction: column; gap: 1.05rem; overflow-y: auto; min-width: 0; }
 .bc-navgroup { display: flex; flex-direction: column; gap: .1rem; }
 .bc-navgroup > p {
   font-family: var(--font-display); font-size: .68rem; letter-spacing: .16em;
-  text-transform: uppercase; color: #69809e; padding: 0 1.25rem; margin: 0 0 .35rem;
+  text-transform: uppercase; color: var(--bc-navy-soft); padding: 0 1.25rem; margin: 0 0 .35rem;
 }
 .bc-navitem {
   display: flex; align-items: center; gap: .6rem; padding: .44rem 1.25rem;
@@ -74,6 +75,21 @@
 .bc-who .n span { font-size: .74rem; color: var(--bc-ink-soft); }
 
 .bc-content { padding: clamp(1.1rem,3vw,1.9rem); display: flex; flex-direction: column; gap: 1.2rem; min-width: 0; }
+#bcContent { display: flex; flex-direction: column; gap: 1.2rem; min-width: 0; }
+
+/* styles.css draws .btn-ghost for dark photo bands: white text, white border.
+   Every surface on this page is light, so without this the buttons that use
+   it -- Sign out, Switch off, Cancel, Close, Preview, Set or reset your
+   password -- were white on white and could not be seen. */
+.btn-ghost { color: var(--color-navy); border-color: transparent; }
+.btn-ghost:hover { color: var(--color-blue); border-color: var(--color-border); }
+.btn-ghost.admin-danger, .btn-ghost.admin-danger:hover { color: #b42318; }
+
+/* Read by screen readers, not drawn. */
+.bc-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 
 /* ------------------------------------------------------------ page furniture */
 .bc-head { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; align-items: flex-end; justify-content: space-between; }
@@ -100,7 +116,7 @@
   display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline; justify-content: space-between;
   padding: .9rem 1.2rem; border-bottom: 1px solid var(--color-light);
 }
-.bc-cardhead h3 {
+.bc-cardhead h2 {
   font-family: var(--font-display); font-size: 1rem; text-transform: uppercase;
   letter-spacing: .03em; font-weight: 600; color: var(--color-navy); margin: 0;
 }
@@ -142,6 +158,7 @@
 
 /* ------------------------------------------------------------------ tables */
 .bc-scroll { overflow-x: auto; min-width: 0; max-width: 100%; }
+.bc-scroll:focus-visible { outline: 2px solid var(--color-blue); outline-offset: -2px; }
 .bc-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 .bc-table thead th {
   font-family: var(--font-display); text-transform: uppercase; font-size: .73rem; letter-spacing: .07em;
@@ -153,6 +170,12 @@
 .bc-table tbody tr.click { cursor: pointer; }
 .bc-table tbody tr.click:hover { background: var(--bc-sunk); }
 .bc-table .nm { font-weight: 600; }
+.bc-rowlink {
+  font: inherit; font-weight: 600; color: var(--color-text); background: none; border: 0;
+  padding: 0; margin: 0; text-align: left; cursor: pointer;
+}
+.bc-rowlink:hover { color: var(--color-blue); text-decoration: underline; }
+.bc-rowlink:focus-visible { outline: 2px solid var(--color-blue); outline-offset: 3px; border-radius: 3px; }
 .bc-table .sc { display: block; font-size: .78rem; color: var(--bc-ink-soft); }
 .bc-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
 .bc-table .ago { color: var(--bc-ink-soft); font-size: .82rem; white-space: nowrap; }
@@ -193,7 +216,7 @@
   display: flex; flex-direction: column; gap: .5rem; box-shadow: var(--bc-shadow);
 }
 .bc-gate.hard { border-left-color: var(--bc-stop-fg); }
-.bc-gate h3 {
+.bc-gate h2 {
   font-family: var(--font-display); font-size: 1rem; text-transform: uppercase;
   letter-spacing: .03em; font-weight: 600; color: var(--color-navy); margin: 0;
 }
@@ -209,9 +232,10 @@
   position: fixed; top: 0; right: 0; height: 100%; width: min(470px,100%);
   background: var(--color-white); border-left: 1px solid var(--color-border);
   box-shadow: -18px 0 48px -24px rgba(26,43,74,.35); transform: translateX(100%);
-  transition: transform .24s var(--ease); z-index: 50; display: flex; flex-direction: column; overflow-y: auto;
+  transition: transform .24s var(--ease), visibility 0s linear .24s; visibility: hidden;
+  z-index: 50; display: flex; flex-direction: column; overflow-y: auto;
 }
-.bc-drawer.on { transform: none; }
+.bc-drawer.on { transform: none; visibility: visible; transition: transform .24s var(--ease), visibility 0s; }
 .bc-dhead {
   display: flex; gap: .8rem; align-items: flex-start; padding: 1.1rem 1.2rem;
   border-bottom: 1px solid var(--color-border); position: sticky; top: 0; background: var(--color-white); z-index: 2;
@@ -227,7 +251,7 @@
 .bc-dhead .x:hover { color: var(--color-text); }
 .bc-dsec { padding: 1rem 1.2rem; border-bottom: 1px solid var(--color-light); display: flex; flex-direction: column; gap: .6rem; }
 .bc-dsec:last-child { border-bottom: 0; }
-.bc-dsec > h4 {
+.bc-dsec > h3 {
   font-family: var(--font-display); font-size: .74rem; letter-spacing: .13em; text-transform: uppercase;
   color: var(--bc-ink-soft); font-weight: 600; margin: 0;
 }
@@ -241,6 +265,10 @@
 .bc-note { display: flex; flex-direction: column; gap: .15rem; padding-bottom: .7rem; border-bottom: 1px dashed var(--color-border); font-size: .86rem; }
 .bc-note:last-of-type { border-bottom: 0; padding-bottom: 0; }
 .bc-note .who { font-size: .76rem; color: var(--bc-ink-soft); }
+.bc-warnline {
+  background: var(--bc-warn-bg); color: var(--bc-warn-fg); border-radius: 8px;
+  padding: .6rem .75rem; font-size: .85rem; margin: 0;
+}
 .bc-stages { display: flex; gap: .25rem; flex-wrap: wrap; }
 .bc-stages button {
   font-size: .74rem; padding: .24rem .58rem; border-radius: 6px; background: var(--bc-sunk);

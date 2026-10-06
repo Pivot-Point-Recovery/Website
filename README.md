@@ -271,11 +271,18 @@ to Supabase Auth and PostgREST over `fetch`.
 | People → Contacts | Contact-form submissions, with stage, owner, contact date and notes. Newsletter sign-ups will land here too once a sign-up form exists |
 | People → Volunteers | Sign-ups with a pipeline: new → screened → onboarding → active |
 | People → Intake | The intake work queue. Reference numbers only — see below |
-| People → Team & access | Who can sign in, as what, and their password (administrators only) |
+| People → Team & access | Who can sign in, what each person can see (**Access**), and their password (administrators only) |
 | Events | The event editor, with each event's RSVPs and guest-list export under it |
 | Giving | Totals for everyone; donor names and amounts for finance only |
 | Board room → Documents | The shared Google Drive, plus labelled links grouped by section |
 | Activity log | Every change, and every read of a confidential record (administrators only) |
+
+"Today" is New York's date everywhere — the overdue count, the overdue
+highlight and "Spoken to today" — not the browser's UTC date, which runs a day
+ahead every evening after 8pm Eastern. On the dashboard, a **failed payment**
+is a gift Stripe declined (`status = 'failed'`); a donor who opened the payment
+page and left (`expired`) is counted separately as a gift "started but not
+finished", because nothing went wrong and nothing was charged.
 
 Every record in Contacts, Volunteers and Intake carries an **owner** and a
 **date they were spoken to**. Both are pickers rather than "assign to me": the
@@ -292,6 +299,25 @@ person can hold more than one:
 | `member` | Everything above except donor-level giving and the two admin-only sections |
 | `finance` | Donor names and amounts. Erica and Steve only, by the board's decision |
 | `admin` | Invite people, change roles, read the activity log |
+
+Change them from **People → Team & access → Access** on the person's row: two
+tick boxes, *Giving* (`finance`) and *Manage access* (`admin`); `member` is
+always kept. Granting either asks first and names what it opens up, and every
+change goes to the activity log with the roles before and after. Signing in is
+decided by `active`, not by `member` — `is_member()` checks only that.
+
+What the page asks is backed by the database
+(`20261006210000_staff_access_guards.sql`), so a script or a stale tab cannot
+get round it:
+
+- `roles` holds only `member`, `finance` and `admin`.
+- At least one **active** person always keeps `admin`. An update or delete that
+  would leave nobody able to let anyone back in fails with a message saying so.
+- Only `admin` can write `staff_members` at all (`staff_admin_write`); a member
+  who tries to give themselves more gets zero rows back.
+
+The page adds two courtesies on top: you cannot untick your own *Manage
+access*, and your own row has no *Switch off*.
 
 ```sql
 -- Invite someone (or do it from People → Team & access)
