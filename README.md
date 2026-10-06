@@ -277,6 +277,13 @@ to Supabase Auth and PostgREST over `fetch`.
 | Board room → Documents | The shared Google Drive, plus labelled links grouped by section |
 | Activity log | Every change, and every read of a confidential record (administrators only) |
 
+"Today" is New York's date everywhere — the overdue count, the overdue
+highlight and "Spoken to today" — not the browser's UTC date, which runs a day
+ahead every evening after 8pm Eastern. On the dashboard, a **failed payment**
+is a gift Stripe declined (`status = 'failed'`); a donor who opened the payment
+page and left (`expired`) is counted separately as a gift "started but not
+finished", because nothing went wrong and nothing was charged.
+
 Every record in Contacts, Volunteers and Intake carries an **owner** and a
 **date they were spoken to**. Both are pickers rather than "assign to me": the
 person who made the call is often not the person at the keyboard, and the date

@@ -16,7 +16,7 @@
        unchanged inside the new shell. */
     .admin-card { background: var(--color-white); border: 1px solid var(--color-border); border-radius: var(--radius);
                   padding: 1.35rem 1.5rem; margin-bottom: 1rem; box-shadow: var(--bc-shadow); }
-    .admin-card h3 { font-family: var(--font-display); text-transform: uppercase; color: var(--color-navy);
+    .admin-card h2, .admin-card h3 { font-family: var(--font-display); text-transform: uppercase; color: var(--color-navy);
                      font-size: 1.1rem; margin: 0 0 .3rem; }
     .admin-meta { color: var(--color-text-mid); font-size: .88rem; margin: 0 0 .75rem; }
     .admin-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
@@ -46,7 +46,7 @@
         </a>
       </div>
     </nav>
-    <div class="admin-login">
+    <main class="admin-login">
       <div class="section-header">
         <p class="section-label">Staff &amp; Board</p>
         <h1 class="section-title">Board Center</h1>
@@ -63,7 +63,8 @@
             <input type="password" id="loginPassword" autocomplete="current-password" placeholder="Your password">
           </div>
           <button type="submit" class="btn btn-primary" id="loginBtn" style="width:100%;justify-content:center">Sign In</button>
-          <p class="form-note" id="loginNote">
+          <p class="form-note" id="loginNote" role="alert" hidden></p>
+          <p class="form-note">
             <button type="button" class="btn btn-ghost btn-small" id="forgotBtn"
                     style="padding-left:0">Set or reset your password</button>
           </p>
@@ -85,13 +86,13 @@
                   style="width:100%;justify-content:center">Save it and sign me in</button>
         </form>
       </div>
-    </div>
+    </main>
   </section>
 
   <!-- ------------------------------------------------------------------ app -->
   <section id="appView" hidden>
     <div class="bc-shell">
-      <aside class="bc-side">
+      <aside class="bc-side" aria-label="Board Center">
         <div class="bc-brand">
           <div class="t"><b>Board Center</b><span>Pivot Point Recovery</span></div>
         </div>
@@ -113,7 +114,7 @@
 
         <div class="bc-content">
           <div class="admin-card" id="passwordCard" hidden>
-            <h3>Change your password</h3>
+            <h2>Change your password</h2>
             <form id="passwordForm">
               <div class="form-group">
                 <label for="newPassword">New password (at least 8 characters)</label>
@@ -243,7 +244,7 @@
 
           <div class="admin-card" id="rsvpCard" hidden style="margin-top:.5rem">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
-              <h3 id="rsvpTitle">RSVPs</h3>
+              <h2 id="rsvpTitle">RSVPs</h2>
               <div class="admin-actions">
                 <button class="btn btn-outline btn-small" id="csvBtn">Download as spreadsheet</button>
                 <button class="btn btn-ghost btn-small" id="rsvpCloseBtn">Close</button>
@@ -258,7 +259,7 @@
   </section>
 
   <div class="bc-scrim" id="bcScrim"></div>
-  <aside class="bc-drawer" id="bcDrawer" aria-label="Record detail" aria-hidden="true"></aside>
+  <aside class="bc-drawer" id="bcDrawer" aria-label="Record detail" aria-hidden="true" inert></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <!-- events.js supplies SUPABASE_URL, SUPABASE_KEY and EVENT_TZ. -->
