@@ -223,7 +223,8 @@ async function compose(): Promise<Digest> {
     db.from('volunteer_interests')
       .select('first_name, last_name, city, interests, availability, status, created_at')
       .order('created_at', { ascending: true }).limit(5000),
-    db.from('intake_queue').select('ref, stage, owner_email, follow_up_due, received_at').limit(5000),
+    db.from('intake_queue')
+      .select('ref, stage, owner_email, follow_up_due, first_contact_at, received_at').limit(5000),
     db.from('donations')
       .select('status, amount_cents, created_at, receipt_sent_at, donor_email, donor_name, is_recurring, ' +
         'fund_designation, metadata')
@@ -249,12 +250,14 @@ async function compose(): Promise<Digest> {
   const unscreened = allVolunteers.filter((r) => (r.status ?? 'new') === 'new');
   const olderUnscreened = unscreened.filter((r) => !thisWeekOnly(r));
 
-  // Intake: reference numbers and dates only.
+  // Intake: reference numbers and dates only. The follow-up date is the
+  // deadline for first contact, so only someone nobody has reached yet can be
+  // late for it -- the same rule as board_summary's overdue count.
   const open = rows(intake).filter((r) => r.stage !== 'closed');
-  const overdue = open.filter((r) => r.follow_up_due && String(r.follow_up_due) < today)
+  const notReached = open.filter((r) => r.stage === 'awaiting_contact' && !r.first_contact_at && r.follow_up_due);
+  const overdue = notReached.filter((r) => String(r.follow_up_due) < today)
     .sort((a, b) => String(a.follow_up_due).localeCompare(String(b.follow_up_due)));
-  const dueSoon = open.filter((r) => r.follow_up_due && String(r.follow_up_due) >= today &&
-    String(r.follow_up_due) <= weekAhead)
+  const dueSoon = notReached.filter((r) => String(r.follow_up_due) >= today && String(r.follow_up_due) <= weekAhead)
     .sort((a, b) => String(a.follow_up_due).localeCompare(String(b.follow_up_due)));
   const unassigned = open.filter((r) => !r.owner_email).length;
   const intakeThisWeek = rows(intake).filter((r) => thisWeekOnly(r, 'received_at')).length;
@@ -329,7 +332,9 @@ async function compose(): Promise<Digest> {
   const intakeBlock = section('Intake',
     open.length
       ? `${plural(open.length, 'intake is', 'intakes are')} open` +
-        (overdue.length ? `, ${overdue.length} past ${overdue.length === 1 ? 'its' : 'their'} follow-up date` : '') +
+        (overdue.length
+          ? `, ${overdue.length} not yet contacted and past ${overdue.length === 1 ? 'its' : 'their'} follow-up date`
+          : '') +
         (unassigned ? `, ${unassigned} with nobody assigned` : '') + '.' +
         (intakeThisWeek ? ` ${plural(intakeThisWeek, 'new intake', 'new intakes')} this week.` : '')
       : 'No intake is open.' +

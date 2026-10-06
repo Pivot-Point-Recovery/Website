@@ -407,7 +407,7 @@
     if (s.intake.overdue > 0) {
       attn.push({ k: 'crit', sev: 'Needs action',
         t: s.intake.overdue + ' intake follow-' + (s.intake.overdue === 1 ? 'up is' : 'ups are') + ' overdue',
-        s: 'Past the follow-up date on the queue', w: 'overdue', go: 'people', goSub: 'intake' });
+        s: 'Nobody has reached them, and the follow-up date has passed', w: 'overdue', go: 'people', goSub: 'intake' });
     }
     if (s.volunteers.unscreened > 0) {
       attn.push({ k: 'warn', sev: 'Watch',
@@ -543,18 +543,22 @@
           }).join('') : '', 'No volunteer sign-ups yet.'));
   }
 
+  /** The follow-up date is the deadline for first contact, so only someone
+   *  nobody has reached yet can be late for it. Same rule as board_summary. */
+  function intakeLate(r, today) {
+    return r.stage === 'awaiting_contact' && !r.first_contact_at && !!r.follow_up_due && r.follow_up_due < today;
+  }
+
   function peopleIntake() {
     var rows = cache.intake || [];
     var today = localDate();
-    var overdue = rows.filter(function (r) {
-      return r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < today;
-    }).length;
+    var overdue = rows.filter(function (r) { return intakeLate(r, today); }).length;
     return head('People', 'The intake work queue — reference numbers, stages and follow-up dates.',
         '<button class="btn btn-primary btn-small" data-intake-new="1">+ Add to the queue</button>') +
       tabs('people') +
       '<div class="bc-grid bc-g4">' +
         tile('Open', String(rows.filter(function (r) { return r.stage !== 'closed'; }).length), 'Not yet closed') +
-        tile('Overdue follow-ups', String(overdue), overdue ? 'Past the date on the queue' : 'All on time', overdue > 0) +
+        tile('Overdue follow-ups', String(overdue), overdue ? 'Not yet contacted, past the date' : 'All on time', overdue > 0) +
         tile('Enrolled', String(rows.filter(function (r) { return r.stage === 'enrolled'; }).length), 'All time') +
         tile('Median first contact',
           summary.intake.median_days_to_contact != null ? days(summary.intake.median_days_to_contact) : '—',
@@ -567,7 +571,7 @@
       card('The queue', rows.length + (rows.length === 1 ? ' entry' : ' entries'),
         table('<th>Reference</th><th>Received</th><th>Stage</th><th>Owner</th><th>Follow-up due</th>',
           rows.length ? rows.map(function (r) {
-            var late = r.stage !== 'closed' && r.follow_up_due && r.follow_up_due < today;
+            var late = intakeLate(r, today);
             return '<tr class="click" data-drawer="intake" data-id="' + esc(r.id) + '">' +
               '<td>' + rowLink('intake', r.id, '<span style="font-variant-numeric:tabular-nums">' + esc(r.ref) + '</span>') + '</td>' +
               '<td class="ago">' + esc(ago(r.received_at)) + '</td>' +
