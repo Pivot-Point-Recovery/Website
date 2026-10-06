@@ -15,6 +15,7 @@
   var REST = SUPABASE_URL + '/rest/v1';
   var SESSION_KEY = 'ppr_admin_session';
   var ADMIN_FN = SUPABASE_URL + '/functions/v1/admin-users';
+  var RECONCILE_FN = SUPABASE_URL + '/functions/v1/donations-reconcile';
   var NOT_ALLOWED = 'Nothing was saved — your account is not allowed to make that change. Ask Erica to check your access.';
 
   var session = null;
@@ -59,6 +60,17 @@
     return new Date(iso).toLocaleString('en-US', {
       timeZone: EVENT_TZ, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
       hour: 'numeric', minute: '2-digit' });
+  }
+  /** The fund as the donor saw it on the page, rather than its slug. */
+  function fundName(r) {
+    return (r.metadata && r.metadata.fund_label) || r.fund_designation || 'General fund';
+  }
+  /** Stripe's billing address on one line. */
+  function addressLine(a) {
+    if (!a || typeof a !== 'object') return '';
+    var region = [a.state, a.postal_code].filter(Boolean).join(' ');
+    return [a.line1, a.line2, [a.city, region].filter(Boolean).join(', '),
+      a.country && a.country !== 'US' ? a.country : ''].filter(Boolean).join(', ');
   }
   function showToast(msg, type) {
     var t = $('toast');
@@ -254,12 +266,15 @@
     new: 'new', contacted: 'info', referred: 'ok', closed: 'flat',
     screened: 'info', onboarding: 'info', active: 'ok', inactive: 'flat',
     awaiting_contact: 'new', in_assessment: 'info', enrolled: 'ok',
-    succeeded: 'ok', pending: 'warn', failed: 'stop',
+    succeeded: 'ok', pending: 'warn', failed: 'stop', processing: 'info', expired: 'flat',
   };
   var STAGE_LABEL = {
     new: 'New', contacted: 'Contacted', referred: 'Referred', closed: 'Closed',
     screened: 'Screened', onboarding: 'Onboarding', active: 'Active', inactive: 'Inactive',
     awaiting_contact: 'Awaiting contact', in_assessment: 'In assessment', enrolled: 'Enrolled',
+    // A gift's status is Stripe's word for it; these are what it means here.
+    succeeded: 'Received', pending: 'Waiting on Stripe', processing: 'Clearing',
+    failed: 'Failed', expired: 'Not completed',
   };
   function stagePill(s) {
     var key = String(s || 'new').toLowerCase();
@@ -323,6 +338,17 @@
     if (s.giving.failed > 0) {
       attn.push({ k: 'warn', sev: 'Watch', t: s.giving.failed + ' payment(s) failed this month',
         s: 'A donor probably meant to give and could not', w: '', go: 'giving' });
+    }
+    // Every gift is checked against Stripe every 15 minutes, and an abandoned
+    // checkout expires after a day -- so anything still waiting past that means
+    // the check itself has stopped, which is how gifts went missing before.
+    var oldestWait = s.giving.oldest_pending
+      ? (Date.now() - new Date(s.giving.oldest_pending).getTime()) / 3600000 : 0;
+    if (s.giving.pending_count > 0 && oldestWait > 26) {
+      attn.push({ k: 'crit', sev: 'Needs action',
+        t: 'Gifts have been waiting on Stripe for over a day',
+        s: 'The automatic check against Stripe may not be running — ask whoever looks after the website',
+        w: ago(s.giving.oldest_pending), go: 'giving' });
     }
     if (s.events.drafts > 0) {
       attn.push({ k: '', sev: 'For info', t: s.events.drafts + ' event(s) still in draft',
@@ -516,15 +542,24 @@
     }
 
     var rows = cache.gifts || [];
-    return head('Giving', 'Every gift, and every attempt that did not complete.',
+    var owed = rows.filter(function (r) { return r.status === 'succeeded' && !r.receipt_sent_at; });
+    return head('Giving', 'Every gift, and every attempt that did not complete. Open one for the donor’s details.',
         '<button class="btn btn-outline btn-small" data-export="gifts">Download as spreadsheet</button>') + tiles +
+      (owed.length
+        ? '<div class="bc-gate"><h3>' + owed.length + (owed.length === 1 ? ' gift has' : ' gifts have') +
+          ' no receipt yet</h3><p>The donor has not been sent their tax acknowledgement — usually because the ' +
+          'gift was found after the fact rather than recorded as it happened. Open each one to send it. A donor ' +
+          'who gave $250 or more needs it to claim the deduction.</p></div>'
+        : '') +
       '<div class="bc-split"><div>' +
       card('Recent gifts', rows.length + ' shown',
         table('<th>Donor</th><th>Fund</th><th>Type</th><th>Amount</th><th>Status</th>',
           rows.length ? rows.map(function (r) {
-            return '<tr><td><span class="nm">' + esc(r.donor_name || 'Anonymous') + '</span>' +
-              '<span class="sc">' + esc(ago(r.created_at)) + '</span></td>' +
-              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.fund_designation || 'General fund') + '</td>' +
+            return '<tr class="click" data-drawer="gift" data-id="' + esc(r.id) + '">' +
+              '<td><span class="nm">' + esc(r.donor_name || 'Anonymous') +
+              (r.donor_note ? ' <span class="bc-pill info" title="Left a note">Note</span>' : '') + '</span>' +
+              '<span class="sc">' + esc([r.donor_email, ago(r.created_at)].filter(Boolean).join(' · ')) + '</span></td>' +
+              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(fundName(r)) + '</td>' +
               '<td><span class="bc-pill flat">' + (r.is_recurring ? 'Monthly' : 'One-time') + '</span></td>' +
               '<td class="r" style="font-weight:600">' + esc(money(r.amount_cents)) + '</td>' +
               '<td>' + stagePill(r.status) + '</td></tr>';
@@ -840,7 +875,14 @@
   // ------------------------------------------------------------------- CSV
   function downloadCsv(name, headers, rows) {
     if (!rows.length) { showToast('There is nothing to download yet.', 'error'); return; }
-    var cell = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+    var cell = function (v) {
+      var s = String(v == null ? '' : v);
+      // Excel and Sheets run a cell that starts like a formula, and these
+      // files carry text strangers typed into the website -- messages, RSVP
+      // notes, donors' notes. A leading apostrophe makes it plain text.
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
     var csv = [headers.map(cell).join(',')]
       .concat(rows.map(function (r) { return r.map(cell).join(','); })).join('\r\n');
     var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
@@ -996,6 +1038,49 @@
           '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Opening it is written to the ' +
           'activity log with your name and the time.</p>' : '') + '</div>' +
         workBlock('intake_queue', r);
+    },
+    /** One gift, for finance only -- the rows never reach anybody else's
+     *  browser. `quiet` re-renders after an action without logging a second
+     *  read of the same record. */
+    gift: function (id, quiet) {
+      var r = (cache.gifts || []).filter(function (x) { return x.id === id; })[0];
+      if (!r) return '';
+      if (!quiet) logActivity('read', 'donations', id);
+      var address = addressLine(r.donor_address);
+      var phoneDigits = String(r.donor_phone || '').replace(/[^\d+]/g, '');
+      var completed = r.status === 'succeeded';
+      var receipt = !completed ? 'Not applicable — the payment did not complete'
+        : r.receipt_sent_at ? 'Sent ' + ago(r.receipt_sent_at)
+        : 'Not sent';
+      var stripeUrl = r.stripe_payment_intent_id
+        ? 'https://dashboard.stripe.com/payments/' + encodeURIComponent(r.stripe_payment_intent_id) : '';
+      return dhead(r.donor_name || 'Anonymous',
+          money(r.amount_cents) + (r.is_recurring ? ' a month' : '') + ' · ' + whenLine(r.created_at),
+          stagePill(r.status)) +
+        '<div class="bc-dsec"><h4>How to reach them</h4><dl class="bc-kv">' +
+        '<dt>Email</dt><dd>' + (r.donor_email
+          ? '<a href="mailto:' + esc(r.donor_email) + '">' + esc(r.donor_email) + '</a>' : '—') + '</dd>' +
+        '<dt>Phone</dt><dd>' + (phoneDigits
+          ? '<a href="tel:' + esc(phoneDigits) + '">' + esc(r.donor_phone) + '</a>' : '—') + '</dd>' +
+        '<dt>Address</dt><dd>' + (address ? esc(address) : '—') + '</dd></dl></div>' +
+        (r.donor_note
+          ? '<div class="bc-dsec"><h4>Their note</h4><div class="bc-quote">' + esc(r.donor_note) + '</div></div>'
+          : '') +
+        '<div class="bc-dsec"><h4>The gift</h4><dl class="bc-kv">' +
+        '<dt>Fund</dt><dd>' + esc(fundName(r)) + '</dd>' +
+        '<dt>Type</dt><dd>' + (r.is_recurring ? 'Monthly' : 'One-time') + '</dd>' +
+        '<dt>Employer match</dt><dd>' + (r.employer_match ? 'Yes — their employer’s form will follow' : 'No') + '</dd>' +
+        '<dt>Receipt</dt><dd>' + esc(receipt) + '</dd></dl>' +
+        '<div class="bc-actions">' +
+        (completed && r.donor_email
+          ? '<button class="btn ' + (r.receipt_sent_at ? 'btn-outline' : 'btn-primary') + ' btn-small" ' +
+            'data-send-receipt="' + esc(r.id) + '">' + (r.receipt_sent_at ? 'Send receipt again' : 'Send receipt') +
+            '</button>'
+          : '') +
+        (stripeUrl
+          ? '<a class="btn btn-outline btn-small" href="' + esc(stripeUrl) + '" target="_blank" rel="noopener">Open in Stripe</a>'
+          : '') +
+        '</div></div>';
     },
   };
 
@@ -1173,6 +1258,35 @@
       return;
     }
 
+    // ---- giving: send (or resend) one donor's tax receipt
+    if (btn && btn.dataset.sendReceipt) {
+      var giftId = btn.dataset.sendReceipt;
+      var gift = (cache.gifts || []).filter(function (x) { return x.id === giftId; })[0];
+      if (!gift) return;
+      var again = Boolean(gift.receipt_sent_at);
+      if (!confirm((again
+          ? 'A receipt already went to ' + gift.donor_email + ' ' + ago(gift.receipt_sent_at) + '. Send it again?'
+          : 'Email the tax receipt for ' + money(gift.amount_cents) + ' to ' + gift.donor_email + '?'))) return;
+      btn.disabled = true;
+      try {
+        var sent = await authFetch(RECONCILE_FN, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'send_receipt', donation_id: giftId, again: again }),
+        });
+        var out = await sent.json().catch(function () { return {}; });
+        if (!sent.ok || !out.ok) throw new Error(out.error || 'The receipt did not send. Please try again.');
+        logActivity('send_receipt', 'donations', giftId);
+        showToast('Receipt sent to ' + gift.donor_email + '.', 'success');
+        cache.gifts = await get('/donations?select=*&order=created_at.desc&limit=200');
+        $('bcContent').innerHTML = V.giving();
+        openDrawer(DRAWER.gift(giftId, true));
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+      }
+      return;
+    }
+
     // ---- intake: add to the queue
     if (btn && btn.dataset.intakeNew) {
       var ref = prompt('Reference number for this intake (no names, please):');
@@ -1303,10 +1417,12 @@
       return;
     }
     if (btn && btn.dataset.export === 'gifts') {
-      downloadCsv('gifts', ['Donor', 'Email', 'Amount', 'Fund', 'Recurring', 'Status', 'Received'],
+      downloadCsv('gifts', ['Donor', 'Email', 'Phone', 'Address', 'Amount', 'Fund', 'Recurring', 'Status',
+                            'Note', 'Receipt sent', 'Received'],
         (cache.gifts || []).map(function (r) {
-          return [r.donor_name, r.donor_email, (r.amount_cents || 0) / 100, r.fund_designation,
-                  r.is_recurring ? 'yes' : 'no', r.status, r.created_at]; }));
+          return [r.donor_name, r.donor_email, r.donor_phone, addressLine(r.donor_address),
+                  (r.amount_cents || 0) / 100, fundName(r), r.is_recurring ? 'yes' : 'no', r.status,
+                  r.donor_note, r.receipt_sent_at || '', r.created_at]; }));
       return;
     }
     if (btn && btn.id === 'csvBtn') {

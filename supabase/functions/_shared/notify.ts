@@ -12,7 +12,7 @@
 
 import { env, envDisabled } from './env.ts';
 import { serviceClient } from './db.ts';
-import { escapeHtml, money } from './validate.ts';
+import { email as parseEmail, escapeHtml, money } from './validate.ts';
 
 export interface NotifyResult {
   notified: boolean;
@@ -202,8 +202,13 @@ export async function sendNotification(
     subject: `[${prefix}] ${subject}`,
     html: wrap(subject, inner, `Sent automatically from ${SITE}`),
   };
-  // Lets staff hit reply and reach the person who submitted the form.
-  if (opts.replyTo) payload.reply_to = opts.replyTo;
+  // Lets staff hit reply and reach the person who submitted the form -- but
+  // only a well-formed address. Resend refuses the whole email over a bad
+  // reply_to, so a donor's typo used to cost staff their notification as well
+  // as costing the donor their receipt. The typo still shows in the body.
+  const replyTo = parseEmail(opts.replyTo);
+  if (replyTo) payload.reply_to = replyTo;
+  else if (opts.replyTo) console.warn('reply_to_dropped_malformed');
 
   return await send(payload, 'resend');
 }
@@ -231,6 +236,9 @@ export interface DonorReceipt {
 export async function sendDonorReceipt(gift: DonorReceipt): Promise<NotifyResult> {
   if (envDisabled('DONOR_RECEIPTS')) return { notified: false, reason: 'DONOR_RECEIPTS disabled' };
   if (!gift.donorEmail) return { notified: false, reason: 'no donor email' };
+  if (!parseEmail(gift.donorEmail)) {
+    return { notified: false, reason: 'donor email is not a valid address' };
+  }
 
   const amount = money(gift.amountCents);
   const when = gift.date ?? new Date().toISOString().slice(0, 10);

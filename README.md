@@ -440,6 +440,7 @@ because they are public endpoints; they authenticate by origin, honeypot, and
 | --- | --- |
 | `donations-checkout` | Validates the gift, writes a `pending` row, opens a Stripe Checkout session |
 | `donations-webhook` | Confirms the gift from Stripe, emails the donor a receipt and staff a notification |
+| `donations-reconcile` | Every 15 minutes, asks Stripe about any gift still `pending` and settles it; also the Board Center's "Send receipt" |
 
 ### What the checkout function decides, not the browser
 
@@ -455,6 +456,26 @@ attributable even if Stripe errors, and its id is used as the Stripe
 idempotency key — a double-submitted form cannot double-charge. Stripe metadata
 carries donor and fund fields only; no participant identifiers ever cross into
 it.
+
+### What we keep about a donor
+
+Name and email (required), phone and a note of up to 500 characters (both
+optional, typed on `donate.html`), and a full mailing address — Checkout runs
+with `billing_address_collection: 'required'`, and the webhook copies what
+Stripe collected into `donor_address`. The phone and the note stay in our
+database and are **never sent to Stripe**: a note is free text, and "in memory
+of my brother" can name somebody we serve.
+
+All of it is finance-only, like the rest of the donor row. The Board Center's
+Giving section opens each gift to show it — contact details, the note, the
+fund, whether a receipt went out, and a link to the payment in Stripe — and
+the staff notification email carries the same.
+
+The email check on both the page and the function now insists on a real
+domain. The looser `x@y.z` shape let `name@example,.org` through; Stripe
+accepted it, and the mail provider then refused the receipt *and* the staff
+notification, because the bad address was also the reply-to. A malformed
+reply-to is now dropped rather than allowed to sink the staff email.
 
 ### The webhook
 
@@ -484,6 +505,35 @@ nothing. Monthly renewals — the one donation with no checkout session behind i
 — are keyed on the invoice id instead, which is what stops a redelivered
 `invoice.paid` booking the same gift twice.
 
+### When the webhook is not enough
+
+A webhook is a delivery, and deliveries get lost. Stripe disabled the site's
+first endpoint after its deliveries kept failing, and every gift from
+2026-08-20 until the replacement endpoint on 2026-09-25 stayed `pending` —
+charged by Stripe, missing from the dashboard, never receipted. Ten gifts,
+$1,760, found on 2026-10-06 by comparing Stripe with the database.
+
+`donations-reconcile` is the net under the webhook. pg_cron calls it every 15
+minutes (`20261006192000_reconcile_schedule.sql`); it looks up every gift still
+`pending` ten minutes after checkout and settles it from Stripe's answer,
+through the same code the webhook uses. What it does with a gift it finds:
+
+| Found | Recorded | Donor receipt | Staff told |
+| --- | --- | --- | --- |
+| within 3 days | yes | sent, as normal | the usual "New donation" email |
+| later than that | yes | **held** — "Send receipt" on the gift in Giving | one summary email per run |
+
+The late case is held on purpose: a receipt weeks after the fact is a person's
+call, not a side effect of a timer. The schedule proves itself to the function
+with a token kept in Vault and compared inside the database
+(`reconcile_token_matches`); the function never holds a copy. Finance can also
+call it from a signed-in session — dry run unless `apply: true`.
+
+If a gift has waited on Stripe for more than a day, the dashboard says so:
+checkouts expire after 24 hours, so that only happens when the check itself
+has stopped. `select * from cron.job_run_details order by start_time desc
+limit 5;` shows its recent runs.
+
 ### Receipts
 
 On a confirmed gift the webhook sends the donor a 501(c)(3) acknowledgement
@@ -492,6 +542,10 @@ IRS wants) and notifies staff separately. The two are tracked in different
 columns — `receipt_sent_at` and `notified` — so if one send fails the retry
 only repeats the half that failed, and no donor is thanked twice. Set
 `DONOR_RECEIPTS=0` to suppress donor receipts and keep staff notifications.
+
+A gift with no receipt is flagged at the top of Giving, and its drawer has a
+**Send receipt** button (finance only, with a confirmation; sending a second
+time asks again). Each send is written to the activity log.
 
 ## Backend
 
@@ -507,11 +561,12 @@ supabase/
                           Center: staff_members, activity_log,
                           record_notes, intake_queue, board_documents)
   functions/
-    _shared/             http (CORS), db, env, validate, notify, stripe
+    _shared/             http (CORS), db, env, validate, notify, stripe, donations
     admin-users/         team sign-ins and passwords (admin only)
     intake-webhook/      Google Form intake -> queue + staff email
     public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
+    donations-reconcile/ settles gifts the webhook missed (pg_cron, 15 min)
     donations-webhook/   confirms gifts, sends receipts
 ```
 
@@ -525,6 +580,7 @@ supabase functions deploy intake-webhook    --no-verify-jwt
 supabase functions deploy public-forms      --no-verify-jwt
 supabase functions deploy donations-checkout --no-verify-jwt
 supabase functions deploy donations-webhook  --no-verify-jwt
+supabase functions deploy donations-reconcile --no-verify-jwt
 ```
 
 `--no-verify-jwt` is required: these are public endpoints called by anonymous
@@ -558,7 +614,7 @@ short alias list, so a name that is *close* still works — but check
 Health-check every function at once:
 
 ```sh
-for fn in public-forms intake-webhook donations-checkout donations-webhook; do
+for fn in public-forms intake-webhook donations-checkout donations-webhook donations-reconcile; do
   echo -n "$fn: "
   curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/$fn?health=1"; echo
 done

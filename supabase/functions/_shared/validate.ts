@@ -3,7 +3,12 @@
 // Everything a browser sends is untrusted. These helpers bound length, strip
 // control characters, and escape anything destined for an HTML email body.
 
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// The domain must be real hostname labels. The looser `x@y.z` shape this
+// replaced let `name@example,.org` through -- a typo Stripe accepted too -- and
+// the mail provider then refused every email that named it, including the
+// staff notification that used it as reply-to.
+export const EMAIL_RE =
+  /^[^\s@,;:<>()[\]\\"]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{1,59})$/;
 
 // Control characters, keeping \t and \n which are legitimate in a message body.
 // deno-lint-ignore no-control-regex

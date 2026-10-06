@@ -10,7 +10,7 @@
 // sends nothing a second time -- which is what makes it safe to run on a
 // schedule.
 
-import { sendDonorReceipt, sendNotification } from './notify.ts';
+import { type NotifyResult, sendDonorReceipt, sendNotification } from './notify.ts';
 import { money } from './validate.ts';
 
 // deno-lint-ignore no-explicit-any
@@ -54,6 +54,36 @@ export function sessionReceiptUrl(session: Obj): string | null {
   return charge?.receipt_url ?? null;
 }
 
+const ADDRESS_PARTS = ['line1', 'line2', 'city', 'state', 'postal_code', 'country'];
+
+/** The billing address Stripe collected, or null. Stripe sends every key back
+ *  as null when it collected nothing, which is not worth storing. */
+export function addressFrom(value: Obj): Record<string, string> | null {
+  if (!value || typeof value !== 'object') return null;
+  const address: Record<string, string> = {};
+  for (const part of ADDRESS_PARTS) {
+    const text = typeof value[part] === 'string' ? value[part].trim() : '';
+    if (text) address[part] = text;
+  }
+  return Object.keys(address).length > 0 ? address : null;
+}
+
+/** "18 Main St, Leesburg, VA 20176" -- one line, for an email row. */
+export function formatAddress(address: Obj): string {
+  if (!address || typeof address !== 'object') return '';
+  const region = [address.state, address.postal_code].filter(Boolean).join(' ');
+  return [
+    address.line1,
+    address.line2,
+    [address.city, region].filter(Boolean).join(', '),
+    address.country && address.country !== 'US' ? address.country : '',
+  ].filter(Boolean).join(', ');
+}
+
+function fundLabel(donation: Obj): string {
+  return donation.metadata?.fund_label ?? donation.fund_designation ?? 'General support';
+}
+
 /** The database patch a session implies. Split out so the reconciler can show a
  *  human what *would* change before anything is written. */
 export function sessionPatch(session: Obj): Record<string, unknown> {
@@ -71,6 +101,11 @@ export function sessionPatch(session: Obj): Record<string, unknown> {
   }
   if (session.customer_details?.email) patch.donor_email = session.customer_details.email;
   if (session.customer_details?.name) patch.donor_name = session.customer_details.name;
+  // Only ever adds: a phone the donor typed on our form is not overwritten by
+  // the null Stripe returns when it did not ask for one.
+  if (session.customer_details?.phone) patch.donor_phone = session.customer_details.phone;
+  const address = addressFrom(session.customer_details?.address);
+  if (address) patch.donor_address = address;
   if (outcome === 'succeeded') patch.receipt_url = sessionReceiptUrl(session);
   return patch;
 }
@@ -79,8 +114,16 @@ export function sessionPatch(session: Obj): Record<string, unknown> {
  * Apply a session to the donations table, and acknowledge it if it was paid.
  * Returns the row as it now stands, or null when the session has not resolved
  * into anything worth writing yet.
+ *
+ * `acknowledge: false` records the gift without emailing anybody -- for gifts
+ * found long after the fact, where whether to send a late receipt is a
+ * person's decision rather than a side effect.
  */
-export async function applySession(db: Db, session: Obj): Promise<Obj | null> {
+export async function applySession(
+  db: Db,
+  session: Obj,
+  opts: { acknowledge?: boolean } = {},
+): Promise<Obj | null> {
   const outcome = sessionOutcome(session);
   if (outcome === 'open') {
     // Nothing has happened yet -- the donor is still on Stripe's page.
@@ -90,7 +133,7 @@ export async function applySession(db: Db, session: Obj): Promise<Obj | null> {
 
   const patch = sessionPatch(session);
   const donationId = session.client_reference_id ?? session.metadata?.donation_id ?? null;
-  const paid = outcome === 'succeeded';
+  const thank = outcome === 'succeeded' && opts.acknowledge !== false;
 
   // Match the row the checkout function created. Falling back to the session id
   // covers a session created outside our flow (a payment link, say).
@@ -102,7 +145,7 @@ export async function applySession(db: Db, session: Obj): Promise<Obj | null> {
   if (error) throw error;
 
   if (data) {
-    if (paid) await acknowledge(db, data);
+    if (thank) await acknowledge(db, data);
     return data;
   }
 
@@ -130,7 +173,7 @@ export async function applySession(db: Db, session: Obj): Promise<Obj | null> {
     .single();
   if (insertError) throw insertError;
 
-  if (paid) await acknowledge(db, inserted);
+  if (thank) await acknowledge(db, inserted);
   return inserted;
 }
 
@@ -147,26 +190,12 @@ export async function applySession(db: Db, session: Obj): Promise<Obj | null> {
 export async function acknowledge(db: Db, donation: Obj, subject?: string): Promise<void> {
   if (!donation) return;
 
-  const label = donation.metadata?.fund_label ?? donation.fund_designation ?? 'General support';
+  const label = fundLabel(donation);
   const amount = money(donation.amount_cents);
 
   if (!donation.receipt_sent_at && donation.donor_email) {
-    const receipt = await sendDonorReceipt({
-      donorName: donation.donor_name ?? '',
-      donorEmail: donation.donor_email,
-      amountCents: donation.amount_cents,
-      isRecurring: Boolean(donation.is_recurring),
-      fundLabel: label,
-      receiptUrl: donation.receipt_url,
-      date: (donation.created_at ?? new Date().toISOString()).slice(0, 10),
-    });
-    if (receipt.notified) {
-      await db.from('donations')
-        .update({ receipt_sent_at: new Date().toISOString() })
-        .eq('id', donation.id);
-    } else {
-      console.warn('donor_receipt_not_sent', donation.id, receipt.reason);
-    }
+    const receipt = await sendReceipt(db, donation);
+    if (!receipt.notified) console.warn('donor_receipt_not_sent', donation.id, receipt.reason);
   }
 
   if (donation.notified) return;
@@ -180,6 +209,9 @@ export async function acknowledge(db: Db, donation: Obj, subject?: string): Prom
       ['Frequency', donation.is_recurring ? 'Monthly recurring' : 'One-time'],
       ['Donor', donation.donor_name ?? ''],
       ['Email', donation.donor_email ?? ''],
+      ['Phone', donation.donor_phone ?? ''],
+      ['Address', formatAddress(donation.donor_address)],
+      ['Their note', donation.donor_note ?? ''],
       ['Designation', label],
       ['Employer match', donation.employer_match ? 'Yes — donor will submit paperwork' : 'No'],
       ['Receipt', donation.receipt_url ?? ''],
@@ -197,4 +229,27 @@ export async function acknowledge(db: Db, donation: Obj, subject?: string): Prom
   } else {
     console.warn('donation_not_notified', donation.id, result.reason);
   }
+}
+
+/**
+ * The donor's tax receipt on its own, stamped with when it went. Used by
+ * `acknowledge`, and by the Board Center's "Send receipt" for a gift that was
+ * recorded without one.
+ */
+export async function sendReceipt(db: Db, donation: Obj): Promise<NotifyResult> {
+  const result = await sendDonorReceipt({
+    donorName: donation.donor_name ?? '',
+    donorEmail: donation.donor_email ?? '',
+    amountCents: donation.amount_cents,
+    isRecurring: Boolean(donation.is_recurring),
+    fundLabel: fundLabel(donation),
+    receiptUrl: donation.receipt_url,
+    date: (donation.created_at ?? new Date().toISOString()).slice(0, 10),
+  });
+  if (result.notified) {
+    await db.from('donations')
+      .update({ receipt_sent_at: new Date().toISOString() })
+      .eq('id', donation.id);
+  }
+  return result;
 }

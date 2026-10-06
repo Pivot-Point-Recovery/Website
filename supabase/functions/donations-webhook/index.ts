@@ -26,7 +26,7 @@ import { stripeRequest, verifySignature } from '../_shared/stripe.ts';
 import { recipientCount } from '../_shared/notify.ts';
 // The rules for what a session means, and what to do about it, live in
 // _shared/donations.ts so this endpoint and the reconciler cannot drift apart.
-import { acknowledge, applySession, type Db, id, type Obj } from '../_shared/donations.ts';
+import { acknowledge, addressFrom, applySession, type Db, id, type Obj } from '../_shared/donations.ts';
 
 const REQUIRED_SECRETS = ['STRIPE_SECRET_KEY'];
 const OPTIONAL_SECRETS = [
@@ -259,10 +259,11 @@ async function handleInvoice(db: Db, invoice: Obj): Promise<void> {
     return;
   }
 
-  // Inherit donor details from the original gift in this subscription.
+  // Inherit donor details from the original gift in this subscription. Not the
+  // note: that was written about the first gift, not every one after it.
   const { data: original } = await db
     .from('donations')
-    .select('donor_name, donor_email, fund_designation, employer_match, metadata')
+    .select('donor_name, donor_email, donor_phone, donor_address, fund_designation, employer_match, metadata')
     .eq('stripe_subscription_id', subscriptionId)
     .order('created_at', { ascending: true })
     .limit(1)
@@ -273,6 +274,8 @@ async function handleInvoice(db: Db, invoice: Obj): Promise<void> {
     .insert({
       donor_name: original?.donor_name ?? invoice.customer_name ?? null,
       donor_email: original?.donor_email ?? invoice.customer_email ?? null,
+      donor_phone: original?.donor_phone ?? invoice.customer_phone ?? null,
+      donor_address: original?.donor_address ?? addressFrom(invoice.customer_address),
       amount_cents: invoice.amount_paid ?? null,
       currency: invoice.currency ?? 'usd',
       is_recurring: true,
