@@ -597,7 +597,7 @@
         table('<th>Who</th><th>Did what</th><th>To</th><th>When</th>',
           rows.length ? rows.map(function (r) {
             return '<tr><td><span class="nm">' + esc(String(r.actor_email || '').split('@')[0]) + '</span></td>' +
-              '<td><span class="bc-pill ' + (r.action === 'read' ? 'info' : r.action === 'delete' ? 'stop' : 'flat') +
+              '<td><span class="bc-pill ' + (r.action === 'read' || r.action === 'open' ? 'info' : r.action === 'delete' ? 'stop' : 'flat') +
               '">' + esc(r.action) + '</span></td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.entity) +
               (r.entity_id ? ' <span style="color:var(--bc-ink-soft)">' + esc(String(r.entity_id).slice(0, 8)) + '</span>' : '') + '</td>' +
@@ -991,7 +991,8 @@
         '<div class="bc-quote">This queue holds a reference number, a stage and a follow-up date. What the ' +
         'person wrote lives in the system that collected it, under 42 CFR Part 2.</div>' +
         (r.source_url ? '<div class="bc-actions"><a class="btn btn-outline btn-small" href="' + esc(r.source_url) +
-          '" target="_blank" rel="noopener">Open the record</a></div>' +
+          '" target="_blank" rel="noopener" data-open-record="' + esc(r.id) + '" data-ref="' + esc(r.ref) +
+          '">Open the record</a></div>' +
           '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Opening it is written to the ' +
           'activity log with your name and the time.</p>' : '') + '</div>' +
         workBlock('intake_queue', r);
@@ -1090,6 +1091,15 @@
     if (row) {
       var fn = DRAWER[row.dataset.drawer];
       if (fn) openDrawer(fn(row.dataset.id));
+      return;
+    }
+
+    // Following the link out to the intake answers is the access the audit
+    // trail exists for, so it is logged separately from opening the drawer.
+    // No preventDefault: the link still opens.
+    var record = t.closest('[data-open-record]');
+    if (record) {
+      logActivity('open', 'intake_queue', record.dataset.openRecord, { ref: record.dataset.ref });
       return;
     }
 
