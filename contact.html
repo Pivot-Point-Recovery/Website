@@ -182,6 +182,10 @@
     // contact_submissions with the service role, and notifies staff via Resend.
     const FORMS_ENDPOINT = 'https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/public-forms';
 
+    // Mirrors EMAIL_RE in the functions' validate.ts, so an address the server
+    // would refuse (a comma for a dot, say) is caught here, on the field.
+    const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{1,59})$/;
+
     function showToast(msg, type) {
       const t = document.getElementById('toast');
       t.textContent = msg;
@@ -228,7 +232,7 @@
 
       let valid = true;
       if (!name) { showError('nameError'); valid = false; } else { hideError('nameError'); }
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showError('emailError'); valid = false; } else { hideError('emailError'); }
+      if (!email || !EMAIL_RE.test(email)) { showError('emailError'); valid = false; } else { hideError('emailError'); }
       if (!message) { showError('messageError'); valid = false; } else { hideError('messageError'); }
       if (!valid) return;
 

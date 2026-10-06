@@ -106,6 +106,24 @@
   function fundName(r) {
     return (r.metadata && r.metadata.fund_label) || fundLabel(r.fund_designation);
   }
+  // The volunteer form's choices, as the form words them, rather than the
+  // codes it stores.
+  var INTEREST_LABELS = {
+    'peer-support': 'Peer recovery support', mentoring: 'Mentoring', events: 'Events & outreach',
+    reentry: 'Reentry & reintegration', admin: 'Administrative support', fundraising: 'Fundraising',
+    other: 'Something else',
+  };
+  var AVAILABILITY_LABELS = { weekdays: 'Weekdays', weekends: 'Weekends', evenings: 'Evenings', flexible: 'Flexible' };
+  function interestList(list, joiner) {
+    return (list || []).map(function (x) { return INTEREST_LABELS[x] || x; }).join(joiner || ', ');
+  }
+  function availabilityLabel(value) { return AVAILABILITY_LABELS[value] || value || ''; }
+  // The contact form's "I'm reaching out about" choices, as the form shows them.
+  var ABOUT_LABELS = {
+    'recovery-support': 'Recovery support', 'veteran-mentorship': 'Veteran mentorship', volunteer: 'Volunteering',
+    donate: 'Making a donation', partner: 'Partnership opportunity', general: 'General inquiry',
+  };
+  function aboutLabel(value) { return ABOUT_LABELS[value] || value || ''; }
   function fundLabel(slug) {
     return FUND_LABELS[slug] || slug || FUND_LABELS.general;
   }
@@ -482,7 +500,7 @@
           return '<tr class="click" data-drawer="enquiry" data-id="' + esc(r.id) + '">' +
             '<td>' + rowLink('enquiry', r.id, esc(r.name || 'No name given')) +
             '<span class="sc">' + esc(r.email || '') + '</span></td>' +
-            '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.interest || '—') + '</td>' +
+            '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(aboutLabel(r.interest) || '—') + '</td>' +
             '<td>' + stagePill(r.status) + '</td><td>' + owner(r.owner_email) + '</td>' +
             '<td class="ago">' + esc(ago(r.created_at)) + '</td></tr>';
         }).join('') : '',
@@ -519,8 +537,8 @@
             return '<tr class="click" data-drawer="volunteer" data-id="' + esc(r.id) + '">' +
               '<td>' + rowLink('volunteer', r.id, esc(name)) + '<span class="sc">' + esc(r.email || '') + '</span></td>' +
               '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.city || '—') + '</td>' +
-              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc((r.interests || []).join(', ') || '—') + '</td>' +
-              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(r.availability || '—') + '</td>' +
+              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(interestList(r.interests) || '—') + '</td>' +
+              '<td style="font-size:.85rem;color:var(--color-text-mid)">' + esc(availabilityLabel(r.availability) || '—') + '</td>' +
               '<td>' + stagePill(r.status) + '</td><td>' + owner(r.owner_email) + '</td></tr>';
           }).join('') : '', 'No volunteer sign-ups yet.'));
   }
@@ -1092,18 +1110,112 @@
       'data-note-entity="' + entity + '">Add note</button></div></div></div>';
   }
 
+  // What the contact form's "I'm reaching out about" values were, as words
+  // that finish the sentence "Thank you for reaching out about ...".
+  var ABOUT = {
+    'recovery-support': 'recovery support', 'veteran-mentorship': 'veteran mentorship',
+    volunteer: 'volunteering', donate: 'making a donation', partner: 'a partnership',
+  };
+  function firstName(full) { return String(full || '').trim().split(/\s+/)[0] || ''; }
+  /** "Steve – CEO" signs as Steve. */
+  function myName() {
+    return String(me.label || me.email.split('@')[0]).split(/\s+[–—-]\s+/)[0];
+  }
+  /** A reply already written apart from the middle: greeting, thanks, the
+   *  sender's name, and -- for an enquiry -- what they wrote, quoted, so the
+   *  thread makes sense to them. */
+  function replyMail(entity, r) {
+    // The blank lines before the signature are where the reply gets written.
+    var signature = '\n\n\n\n' + myName() + '\nPivot Point Recovery\npivotpointrecovery.org';
+    if (entity === 'volunteer_interests') {
+      return {
+        subject: 'Volunteering with Pivot Point Recovery',
+        body: 'Hi ' + (firstName(r.first_name) || 'there') + ',\n\n' +
+          'Thank you for signing up to volunteer with Pivot Point Recovery.' + signature,
+      };
+    }
+    var about = ABOUT[r.interest] ? ' about ' + ABOUT[r.interest] : '';
+    // Long enough to be recognisable, short enough for a compose link.
+    var said = String(r.message || '').trim();
+    if (said.length > 1200) said = said.slice(0, 1200) + ' […]';
+    return {
+      subject: 'Re: your message to Pivot Point Recovery',
+      body: 'Hi ' + (firstName(r.name) || 'there') + ',\n\n' +
+        'Thank you for reaching out to Pivot Point Recovery' + about + '.' + signature +
+        (said ? '\n\n----\nOn ' + dayLine(r.created_at) + ' you wrote:\n' +
+          said.split(/\r?\n/).map(function (line) { return '> ' + line; }).join('\n') : ''),
+    };
+  }
+  /** Reply in Gmail (the team's mail is Google Workspace) or in whatever app
+   *  the computer uses for email links. Either way, opening it is what
+   *  records the contact -- see markReplied. */
+  function replyBlock(entity, r) {
+    if (!r.email || !EMAIL_RE.test(r.email)) {
+      return r.email
+        ? '<div class="bc-dsec"><h3>Reply</h3><p class="bc-warnline">This email address looks mistyped, ' +
+          'so there is no reply button. Their phone number, if they gave one, is below.</p></div>'
+        : '';
+    }
+    var mail = replyMail(entity, r);
+    var to = encodeURIComponent(r.email).replace(/%40/g, '@');
+    var gmail = 'https://mail.google.com/mail/?authuser=' + encodeURIComponent(me.jwtEmail) +
+      '&view=cm&fs=1&to=' + to + '&su=' + encodeURIComponent(mail.subject) +
+      '&body=' + encodeURIComponent(mail.body);
+    var mailto = 'mailto:' + to + '?subject=' + encodeURIComponent(mail.subject) +
+      '&body=' + encodeURIComponent(mail.body);
+    // Say what opening it will record -- which is nothing, once a first
+    // contact and (for an enquiry) a stage past New are already there.
+    var marks = entity === 'contact_submissions' && (r.status || 'new') === 'new' ? 'marks them Contacted'
+      : !r.first_contact_at ? 'records today as the day they were first contacted' : '';
+    var attrs = ' data-reply="' + esc(r.id) + '" data-reply-entity="' + entity + '"';
+    return '<div class="bc-dsec"><h3>Reply</h3><div class="bc-actions">' +
+      '<a class="btn btn-primary btn-small" href="' + esc(gmail) + '" target="_blank" rel="noopener"' + attrs +
+      '>Reply in Gmail</a>' +
+      '<a class="btn btn-outline btn-small" href="' + esc(mailto) + '"' + attrs + '>Other email app</a></div>' +
+      '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Opens a reply addressed to ' + esc(r.email) +
+      ', greeting and sign-off written' + (marks
+        ? ', and ' + marks + '. If you end up not sending it, change it back below.'
+        : '.') + '</p></div>';
+  }
+  /** Opening a reply is the moment somebody gets in touch, so it is recorded
+   *  then: the stage moves from New to Contacted, the replier becomes the
+   *  owner if nobody was, and today becomes the first-contact date if there
+   *  was none. Anything already set is left alone. */
+  async function markReplied(entity, id) {
+    var list = entity === 'contact_submissions' ? cache.enquiries : cache.volunteers;
+    var r = (list || []).filter(function (x) { return x.id === id; })[0];
+    if (!r) return;
+    var patch = {};
+    if (entity === 'contact_submissions' && (r.status || 'new') === 'new') patch.status = 'contacted';
+    if (!r.owner_email) patch.owner_email = me.jwtEmail;
+    if (!r.first_contact_at) patch.first_contact_at = timestampFor(localDate(), '12:00');
+    logActivity('reply', entity, id, { recorded: Object.keys(patch) });
+    if (!Object.keys(patch).length) return;
+    try {
+      await writeRows(REST + '/' + entity + '?id=eq.' + encodeURIComponent(id), 'PATCH', patch);
+      showToast(patch.status
+        ? 'Marked Contacted. If you don’t send the reply, set the stage back to New.'
+        : 'Recorded today as their first contact.', 'success');
+      summary = null;
+      closeDrawer();
+      await render();
+      refocusRow(id);
+    } catch (err) { showToast(err.message, 'error'); }
+  }
+
   var DRAWER = {
     enquiry: function (id) {
       var r = (cache.enquiries || []).filter(function (x) { return x.id === id; })[0];
       if (!r) return '';
       logActivity('read', 'contact_submissions', id);
       return dhead(r.name || 'No name given', 'Arrived ' + ago(r.created_at), stagePill(r.status)) +
+        replyBlock('contact_submissions', r) +
         '<div class="bc-dsec"><h3>Stage</h3>' +
         stageButtons('contact_submissions', id, ['new', 'contacted', 'referred', 'closed'], r.status || 'new') + '</div>' +
         '<div class="bc-dsec"><h3>How to reach them</h3><dl class="bc-kv">' +
         '<dt>Email</dt><dd><a href="mailto:' + esc(r.email) + '">' + esc(r.email || '—') + '</a></dd>' +
         '<dt>Phone</dt><dd>' + esc(r.phone || '—') + '</dd>' +
-        '<dt>About</dt><dd>' + esc(r.interest || '—') + '</dd>' +
+        '<dt>About</dt><dd>' + esc(aboutLabel(r.interest) || '—') + '</dd>' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
         '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(dayLine(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
         '<div class="bc-dsec"><h3>What they wrote</h3><div class="bc-quote">' + esc(r.message || '(nothing)') + '</div>' +
@@ -1117,14 +1229,15 @@
       logActivity('read', 'volunteer_interests', id);
       var name = [r.first_name, r.last_name].filter(Boolean).join(' ') || 'No name given';
       return dhead(name, 'Signed up ' + ago(r.created_at), stagePill(r.status)) +
+        replyBlock('volunteer_interests', r) +
         '<div class="bc-dsec"><h3>Stage</h3>' +
         stageButtons('volunteer_interests', id, ['new', 'screened', 'onboarding', 'active', 'inactive'], r.status || 'new') + '</div>' +
         '<div class="bc-dsec"><h3>Details</h3><dl class="bc-kv">' +
         '<dt>Email</dt><dd><a href="mailto:' + esc(r.email) + '">' + esc(r.email || '—') + '</a></dd>' +
         '<dt>Phone</dt><dd>' + esc(r.phone || '—') + '</dd>' +
         '<dt>Town</dt><dd>' + esc(r.city || '—') + '</dd>' +
-        '<dt>Interests</dt><dd>' + esc((r.interests || []).join(', ') || '—') + '</dd>' +
-        '<dt>Available</dt><dd>' + esc(r.availability || '—') + '</dd>' +
+        '<dt>Interests</dt><dd>' + esc(interestList(r.interests) || '—') + '</dd>' +
+        '<dt>Available</dt><dd>' + esc(availabilityLabel(r.availability) || '—') + '</dd>' +
         '<dt>Owner</dt><dd>' + owner(r.owner_email) + '</dd>' +
         '<dt>Spoken to</dt><dd>' + (r.first_contact_at ? esc(dayLine(r.first_contact_at)) : 'not yet') + '</dd></dl></div>' +
         (r.experience ? '<div class="bc-dsec"><h3>What they told us</h3>' +
@@ -1354,6 +1467,14 @@
     var record = t.closest('[data-open-record]');
     if (record) {
       logActivity('open', 'intake_queue', record.dataset.openRecord, { ref: record.dataset.ref });
+      return;
+    }
+
+    // A reply link opens the email itself (no preventDefault); this records
+    // that somebody got in touch.
+    var reply = t.closest('[data-reply]');
+    if (reply) {
+      markReplied(reply.dataset.replyEntity, reply.dataset.reply);
       return;
     }
 
@@ -1652,14 +1773,16 @@
     if (btn && btn.dataset.export === 'enquiries') {
       downloadCsv('enquiries', ['Name', 'Email', 'Phone', 'About', 'Message', 'Stage', 'Owner', 'Received'],
         (cache.enquiries || []).map(function (r) {
-          return [r.name, r.email, r.phone, r.interest, r.message, r.status, r.owner_email, r.created_at]; }));
+          return [r.name, r.email, r.phone, aboutLabel(r.interest), r.message, r.status, r.owner_email,
+                  r.created_at]; }));
       return;
     }
     if (btn && btn.dataset.export === 'volunteers') {
       downloadCsv('volunteers', ['First name', 'Last name', 'Email', 'Phone', 'Town', 'Interests', 'Availability', 'Stage', 'Owner', 'Signed up'],
         (cache.volunteers || []).map(function (r) {
           return [r.first_name, r.last_name, r.email, r.phone, r.city,
-                  (r.interests || []).join('; '), r.availability, r.status, r.owner_email, r.created_at]; }));
+                  interestList(r.interests, '; '), availabilityLabel(r.availability), r.status, r.owner_email,
+                  r.created_at]; }));
       return;
     }
     if (btn && btn.dataset.export === 'gifts') {
@@ -1712,6 +1835,7 @@
     }
     me = {
       email: mine.email,
+      label: mine.label || '',
       // What the database compares against in policy checks.
       jwtEmail: signedInAs,
       roles: mine.roles || [],

@@ -284,6 +284,16 @@ is a gift Stripe declined (`status = 'failed'`); a donor who opened the payment
 page and left (`expired`) is counted separately as a gift "started but not
 finished", because nothing went wrong and nothing was charged.
 
+**Reply** sits at the top of every contact and volunteer drawer: *Reply in
+Gmail* (the team's mail is Google Workspace; it opens in the signed-in
+person's own account) or *Other email app*. The reply is already addressed,
+greeted and signed, with an enquiry's own message quoted underneath. Opening
+it records the contact — an enquiry moves from New to Contacted, the person
+replying becomes the owner if nobody was, and today becomes the first-contact
+date if there was none — because "replied but forgot to update the
+dashboard" is how every enquiry since August still read New in October. If
+the email is not sent after all, change the stage back.
+
 Every record in Contacts, Volunteers and Intake carries an **owner** and a
 **date they were spoken to**. Both are pickers rather than "assign to me": the
 person who made the call is often not the person at the keyboard, and the date
