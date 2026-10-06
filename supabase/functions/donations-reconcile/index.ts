@@ -14,7 +14,7 @@
 // person could run it, and nobody did.
 //
 // So it now runs itself: pg_cron calls it every 15 minutes
-// (20261006191000_reconcile_schedule.sql). It takes every unresolved gift, asks
+// (20261006192000_reconcile_schedule.sql). It takes every unresolved gift, asks
 // Stripe directly what became of its checkout session, and applies the answer
 // through exactly the same code the webhook uses. Nothing is invented: a gift
 // becomes `succeeded` only because Stripe said it was paid.
