@@ -116,6 +116,11 @@ curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/intake-webhook?he
 
 `configured: true` and a non-zero `recipients` count mean it is ready.
 
+The trigger only sees submissions made after `setup`. To bring in responses
+that were already on the form, run `backfillExisting` once. It is safe to run
+again: a response already in the queue is skipped, and each one it adds sends
+the usual staff email.
+
 Re-running `setup` is safe: it replaces its own trigger rather than adding a
 second, and keeps the secret it already made. Whoever runs it owns the trigger
 — if that person's Google account is ever closed, run `setup` again as someone
