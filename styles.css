@@ -568,9 +568,9 @@ ul { list-style: none; }
    (was inline on contact.html; shared by
    contact / volunteer / donate)
    ======================================== */
-.form-error { color: #dc2626; font-size: 0.8rem; margin-top: 0.3rem; display: none; }
+.form-error { color: #b42318; font-size: 0.8rem; margin-top: 0.3rem; display: none; } /* 6:1 on the form panel; #dc2626 was 4.5:1 */
 .form-error.visible { display: block; }
-.contact-form input.error, .contact-form select.error, .contact-form textarea.error { border-color: #dc2626 !important; }
+.contact-form input.error, .contact-form select.error, .contact-form textarea.error { border-color: #b42318 !important; }
 .toast { position: fixed; top: 100px; right: 1.5rem; padding: 0.85rem 1.25rem; border-radius: 8px; color: #fff; font-size: 0.88rem; font-weight: 500; z-index: 9999; transform: translateX(120%); transition: transform 0.3s ease; max-width: 360px; }
 .toast.show { transform: translateX(0); }
 .toast.success { background: #047857; } /* white on it: 5.5:1 (was 3.8:1) */

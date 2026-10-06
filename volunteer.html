@@ -232,6 +232,10 @@
     // notifies staff via Resend (NOTIFICATION_EMAILS).
     const FORMS_ENDPOINT = 'https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/public-forms';
 
+    // Mirrors EMAIL_RE in the functions' validate.ts, so an address the server
+    // would refuse (a comma for a dot, say) is caught here, on the field.
+    const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{1,59})$/;
+
     function showToast(msg, type) {
       const t = document.getElementById('toast');
       t.textContent = msg;
@@ -284,7 +288,7 @@
       let valid = true;
       if (!firstName) { showError('firstNameError'); valid = false; } else { hideError('firstNameError'); }
       if (!lastName) { showError('lastNameError'); valid = false; } else { hideError('lastNameError'); }
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showError('emailError'); valid = false; } else { hideError('emailError'); }
+      if (!email || !EMAIL_RE.test(email)) { showError('emailError'); valid = false; } else { hideError('emailError'); }
       if (!phone) { showError('phoneError'); valid = false; } else { hideError('phoneError'); }
       if (!valid) return;
 

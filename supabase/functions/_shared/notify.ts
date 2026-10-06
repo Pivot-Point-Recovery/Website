@@ -168,6 +168,13 @@ export async function recipientCount(audience: Audience = 'forms'): Promise<numb
   return (await recipients(audience)).length;
 }
 
+/** The addresses themselves, for code that has to choose what each person is
+ *  sent -- the Monday digest shows gifts only to the donations list. Never
+ *  return these from an endpoint. */
+export async function recipientList(audience: Audience): Promise<string[]> {
+  return await recipients(audience);
+}
+
 /** Staff notification: a form submission or an incoming gift. */
 export async function sendNotification(
   subject: string,
@@ -211,6 +218,32 @@ export async function sendNotification(
   else if (opts.replyTo) console.warn('reply_to_dropped_malformed');
 
   return await send(payload, 'resend');
+}
+
+/**
+ * A staff email whose body the caller has already laid out -- the Monday
+ * digest. Everything in `inner` must already be escaped. Same list, sender and
+ * shell as every other staff notification; `to` narrows it to named people
+ * (an administrator previewing it, say) and falls back to the list when empty.
+ */
+export async function sendStaffHtml(
+  subject: string,
+  inner: string,
+  opts: { audience?: Audience; to?: string[]; links?: Array<[string, string]>; heading?: string } = {},
+): Promise<NotifyResult & { recipients: number }> {
+  const explicit = dedupe(opts.to ?? []);
+  const to = explicit.length > 0 ? explicit : await recipients(opts.audience ?? 'forms');
+  if (to.length === 0) {
+    return { notified: false, reason: 'no recipients (table empty and NOTIFICATION_EMAILS unset)', recipients: 0 };
+  }
+  const prefix = env('NOTIFICATION_PREFIX', 'PPR');
+  const result = await send({
+    from: sender(),
+    to,
+    subject: `[${prefix}] ${subject}`,
+    html: wrap(opts.heading || subject, inner + buttons(opts.links ?? []), `Sent automatically from ${SITE}`),
+  }, 'resend_digest');
+  return { ...result, recipients: to.length };
 }
 
 export interface DonorReceipt {
