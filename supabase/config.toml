@@ -16,3 +16,15 @@ verify_jwt = false
 
 [functions.donations-webhook]
 verify_jwt = false
+
+# Called every 15 minutes by pg_cron, which holds no user session, and by
+# finance from the Board Center. It authenticates both itself: the schedule's
+# token against Vault, a person's session against has_role('finance').
+[functions.donations-reconcile]
+verify_jwt = false
+
+# Called by the Apps Script on the intake Google Form, which has no Supabase
+# JWT either. It authenticates with the INTAKE_WEBHOOK_SECRET shared secret
+# and refuses every request while that secret is unset.
+[functions.intake-webhook]
+verify_jwt = false

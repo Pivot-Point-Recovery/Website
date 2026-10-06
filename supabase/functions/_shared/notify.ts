@@ -12,7 +12,7 @@
 
 import { env, envDisabled } from './env.ts';
 import { serviceClient } from './db.ts';
-import { escapeHtml, money } from './validate.ts';
+import { email as parseEmail, escapeHtml, money } from './validate.ts';
 
 export interface NotifyResult {
   notified: boolean;
@@ -117,6 +117,20 @@ function rowsToTable(rows: Array<[string, string]>): string {
   return `<table style="width:100%;border-collapse:collapse;font-size:14px">${body}</table>`;
 }
 
+/** Buttons under the table, the first one filled. https only -- anything else
+ *  is dropped rather than put in an href. */
+function buttons(links: Array<[string, string]>): string {
+  const html = links
+    .filter(([label, url]) => label && /^https:\/\//i.test(url))
+    .map(([label, url], index) =>
+      `<a href="${escapeHtml(url)}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 18px;border-radius:8px;border:2px solid ${BRAND_BLUE};${
+        index === 0 ? `background:${BRAND_BLUE};color:#fff` : `background:#fff;color:${BRAND_BLUE}`
+      };text-decoration:none;font-weight:600;font-size:14px">${escapeHtml(label)}</a>`
+    )
+    .join('');
+  return html ? `<p style="margin:20px 0 0">${html}</p>` : '';
+}
+
 /** POST to Resend. Never throws -- every failure comes back as a NotifyResult. */
 async function send(payload: Record<string, unknown>, label: string): Promise<NotifyResult> {
   const apiKey = env('RESEND_API_KEY');
@@ -158,7 +172,13 @@ export async function recipientCount(audience: Audience = 'forms'): Promise<numb
 export async function sendNotification(
   subject: string,
   rows: Array<[string, string]>,
-  opts: { replyTo?: string; intro?: string; audience?: Audience; to?: string[] } = {},
+  opts: {
+    replyTo?: string;
+    intro?: string;
+    audience?: Audience;
+    to?: string[];
+    links?: Array<[string, string]>;
+  } = {},
 ): Promise<NotifyResult> {
   // An explicit `to` addresses one named person rather than the standing staff
   // list -- an event's own organiser, who is chosen per event at /admin and is
@@ -174,7 +194,7 @@ export async function sendNotification(
   const prefix = env('NOTIFICATION_PREFIX', 'PPR');
   const inner = `${
     opts.intro ? `<p style="margin:0 0 16px;color:#4a5568">${escapeHtml(opts.intro)}</p>` : ''
-  }${rowsToTable(rows)}`;
+  }${rowsToTable(rows)}${buttons(opts.links ?? [])}`;
 
   const payload: Record<string, unknown> = {
     from: sender(),
@@ -182,8 +202,13 @@ export async function sendNotification(
     subject: `[${prefix}] ${subject}`,
     html: wrap(subject, inner, `Sent automatically from ${SITE}`),
   };
-  // Lets staff hit reply and reach the person who submitted the form.
-  if (opts.replyTo) payload.reply_to = opts.replyTo;
+  // Lets staff hit reply and reach the person who submitted the form -- but
+  // only a well-formed address. Resend refuses the whole email over a bad
+  // reply_to, so a donor's typo used to cost staff their notification as well
+  // as costing the donor their receipt. The typo still shows in the body.
+  const replyTo = parseEmail(opts.replyTo);
+  if (replyTo) payload.reply_to = replyTo;
+  else if (opts.replyTo) console.warn('reply_to_dropped_malformed');
 
   return await send(payload, 'resend');
 }
@@ -211,6 +236,9 @@ export interface DonorReceipt {
 export async function sendDonorReceipt(gift: DonorReceipt): Promise<NotifyResult> {
   if (envDisabled('DONOR_RECEIPTS')) return { notified: false, reason: 'DONOR_RECEIPTS disabled' };
   if (!gift.donorEmail) return { notified: false, reason: 'no donor email' };
+  if (!parseEmail(gift.donorEmail)) {
+    return { notified: false, reason: 'donor email is not a valid address' };
+  }
 
   const amount = money(gift.amountCents);
   const when = gift.date ?? new Date().toISOString().slice(0, 10);

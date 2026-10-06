@@ -28,6 +28,9 @@ const MIN_CENTS = 500;
 // Above this, a card is the wrong instrument. Route to a conversation instead.
 const MAX_CENTS = 5_000_000;
 
+// The note box on donate.html carries the same maxlength.
+const NOTE_MAX = 500;
+
 // Mirrors the <select id="fund"> options on donate.html. Unknown slugs fall
 // back to general support rather than rejecting an otherwise valid gift.
 const FUNDS: Record<string, string> = {
@@ -108,6 +111,11 @@ Deno.serve(async (req) => {
   const fundLabel = FUNDS[fundSlug] ?? FUNDS[''];
   const isRecurring = bool(payload.is_recurring);
   const employerMatch = bool(payload.employer_match);
+  // Both optional, both ours: neither is sent to Stripe. A note is free text --
+  // "in memory of my brother" can name somebody we serve -- and Stripe metadata
+  // carries donor-scoped facts only (see the note on `metadata` below).
+  const donorPhone = str(payload.donor_phone, 40);
+  const donorNote = str(payload.donor_note, NOTE_MAX);
 
   // --- Record the attempt ---------------------------------------------------
 
@@ -118,6 +126,8 @@ Deno.serve(async (req) => {
     .insert({
       donor_name: donorName,
       donor_email: donorEmail,
+      donor_phone: donorPhone || null,
+      donor_note: donorNote || null,
       amount_cents: cents,
       currency: 'usd',
       is_recurring: isRecurring,
@@ -158,6 +168,10 @@ Deno.serve(async (req) => {
     cancel_url: `${siteUrl}/donate?status=cancelled`,
     customer_email: donorEmail,
     client_reference_id: donation.id,
+    // A full mailing address, not just the postcode a card check needs: it is
+    // where a thank-you letter or a year-end giving statement goes. Stripe
+    // shows it on its own page and the webhook copies it to donor_address.
+    billing_address_collection: 'required',
     // Renders a "Donate" button rather than "Pay". Payment mode only.
     submit_type: isRecurring ? undefined : 'donate',
     line_items: [{

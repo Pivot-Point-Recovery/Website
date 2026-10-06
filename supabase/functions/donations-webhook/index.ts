@@ -21,10 +21,12 @@
 // re-reading an object an attacker named.
 
 import { serviceClient } from '../_shared/db.ts';
-import { env, hasEnv, healthReport } from '../_shared/env.ts';
+import { env, envNamesMatching, envShape, envSourceName, hasEnv, healthReport } from '../_shared/env.ts';
 import { stripeRequest, verifySignature } from '../_shared/stripe.ts';
-import { recipientCount, sendDonorReceipt, sendNotification } from '../_shared/notify.ts';
-import { money } from '../_shared/validate.ts';
+import { recipientCount } from '../_shared/notify.ts';
+// The rules for what a session means, and what to do about it, live in
+// _shared/donations.ts so this endpoint and the reconciler cannot drift apart.
+import { acknowledge, addressFrom, applySession, type Db, id, type Obj } from '../_shared/donations.ts';
 
 const REQUIRED_SECRETS = ['STRIPE_SECRET_KEY'];
 const OPTIONAL_SECRETS = [
@@ -40,10 +42,19 @@ function reply(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
-// deno-lint-ignore no-explicit-any
-type Db = any;
-// deno-lint-ignore no-explicit-any
-type Obj = any;
+/** How many Stripe events have ever been applied. Null if unreadable. */
+async function eventsApplied(): Promise<number | null> {
+  try {
+    const { count, error } = await serviceClient()
+      .from('stripe_events')
+      .select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    return count ?? 0;
+  } catch (error) {
+    console.error('stripe_events_unreadable', error);
+    return null;
+  }
+}
 
 /** A Stripe id we are willing to look up, by object kind. */
 const ID_PREFIX: Record<string, string> = {
@@ -63,6 +74,30 @@ Deno.serve(async (req) => {
         // still writes nothing it did not read back from Stripe, but signature
         // verification is the intended posture -- set STRIPE_WEBHOOK_SECRET.
         verification: hasEnv('STRIPE_WEBHOOK_SECRET') ? 'signature' : 'refetch_only',
+        // Which variable actually supplied each secret, and what shape it is.
+        // Names and prefixes only -- no value, or any part of one, is returned.
+        //
+        // "configured: true" was never proof the *right* secret was set. The
+        // alias lists in env.ts are generous by design, so a leftover
+        // WEBHOOK_SECRET satisfies the check while every real delivery fails
+        // its HMAC, which looks identical from outside to Stripe never calling.
+        // These three fields separate those cases without a Stripe login.
+        resolved: {
+          STRIPE_SECRET_KEY: envSourceName('STRIPE_SECRET_KEY'),
+          STRIPE_WEBHOOK_SECRET: envSourceName('STRIPE_WEBHOOK_SECRET'),
+        },
+        shape: {
+          STRIPE_SECRET_KEY: envShape('STRIPE_SECRET_KEY'),
+          STRIPE_WEBHOOK_SECRET: envShape('STRIPE_WEBHOOK_SECRET'),
+        },
+        // A signing secret that is not `whsec_...` cannot verify anything.
+        signing_secret_well_formed:
+          (envShape('STRIPE_WEBHOOK_SECRET')?.prefix ?? null) === 'whsec_',
+        stripe_env_names: envNamesMatching(/STRIPE/i),
+        // Has any Stripe delivery ever been applied? Empty means the endpoint
+        // has never once been reached successfully -- a registration problem in
+        // the Stripe dashboard, not a problem with any individual gift.
+        events_applied: await eventsApplied(),
         // Count only, never the addresses.
         recipients: await recipientCount('donations'),
       });
@@ -157,7 +192,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    if (kind === 'session') await handleSession(db, object);
+    if (kind === 'session') await applySession(db, object);
     else if (kind === 'invoice') await handleInvoice(db, object);
     else await handleSubscription(db, object);
   } catch (error) {
@@ -172,15 +207,15 @@ Deno.serve(async (req) => {
 
 // --- Re-fetch ---------------------------------------------------------------
 
-function refetch(kind: keyof typeof ID_PREFIX, id: string) {
+function refetch(kind: keyof typeof ID_PREFIX, objectId: string) {
   if (kind === 'session') {
     // latest_charge rides along so the donor's receipt link costs no extra call.
-    return stripeRequest('GET', `/checkout/sessions/${id}`, {
+    return stripeRequest('GET', `/checkout/sessions/${objectId}`, {
       expand: ['payment_intent.latest_charge'],
     });
   }
-  if (kind === 'invoice') return stripeRequest('GET', `/invoices/${id}`);
-  return stripeRequest('GET', `/subscriptions/${id}`);
+  if (kind === 'invoice') return stripeRequest('GET', `/invoices/${objectId}`);
+  return stripeRequest('GET', `/subscriptions/${objectId}`);
 }
 
 // --- Field extraction -------------------------------------------------------
@@ -190,14 +225,6 @@ function refetch(kind: keyof typeof ID_PREFIX, id: string) {
 // here are pinned by _shared/stripe.ts, so the flat form is what arrives; the
 // nested fallbacks mean bumping that pin does not silently stop recording
 // monthly renewals.
-
-function id(value: unknown): string | null {
-  if (typeof value === 'string' && value) return value;
-  if (value && typeof value === 'object' && typeof (value as Obj).id === 'string') {
-    return (value as Obj).id;
-  }
-  return null;
-}
 
 function invoiceSubscriptionId(invoice: Obj): string | null {
   return id(invoice.subscription) ??
@@ -212,101 +239,7 @@ function invoicePaymentIntentId(invoice: Obj): string | null {
     null;
 }
 
-/** What Stripe says the money actually did. */
-function sessionOutcome(session: Obj): 'succeeded' | 'processing' | 'failed' | 'expired' | 'open' {
-  if (session.status === 'expired') return 'expired';
-
-  const paid = session.payment_status === 'paid' || session.payment_status === 'no_payment_required';
-  if (paid) return 'succeeded';
-
-  if (session.status !== 'complete') return 'open';
-
-  // Completed but unpaid: a delayed method (ACH debit) is still clearing, or it
-  // already bounced. The payment intent is the only thing that knows which.
-  const intentStatus = typeof session.payment_intent === 'object'
-    ? session.payment_intent?.status
-    : null;
-  if (intentStatus === 'succeeded') return 'succeeded';
-  if (intentStatus === 'canceled' || intentStatus === 'requires_payment_method') return 'failed';
-  return 'processing';
-}
-
-function sessionReceiptUrl(session: Obj): string | null {
-  const intent = typeof session.payment_intent === 'object' ? session.payment_intent : null;
-  const charge = intent && typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
-  return charge?.receipt_url ?? null;
-}
-
 // --- Handlers ---------------------------------------------------------------
-
-async function handleSession(db: Db, session: Obj): Promise<void> {
-  const outcome = sessionOutcome(session);
-  if (outcome === 'open') {
-    // Nothing has happened yet -- the donor is still on Stripe's page.
-    console.log('session_still_open', session.id);
-    return;
-  }
-
-  const status = outcome === 'succeeded' ? 'succeeded' : outcome;
-  const donationId = session.client_reference_id ?? session.metadata?.donation_id ?? null;
-  const paid = outcome === 'succeeded';
-
-  const patch: Record<string, unknown> = {
-    status,
-    stripe_session_id: session.id,
-    stripe_payment_intent_id: id(session.payment_intent),
-    stripe_subscription_id: id(session.subscription),
-    stripe_customer_id: id(session.customer),
-    updated_at: new Date().toISOString(),
-  };
-
-  if (typeof session.amount_total === 'number' && session.amount_total > 0) {
-    patch.amount_cents = session.amount_total;
-  }
-  if (session.customer_details?.email) patch.donor_email = session.customer_details.email;
-  if (session.customer_details?.name) patch.donor_name = session.customer_details.name;
-  if (paid) patch.receipt_url = sessionReceiptUrl(session);
-
-  // Match the row the checkout function created. Falling back to the session id
-  // covers a session created outside our flow (a payment link, say).
-  const query = donationId
-    ? db.from('donations').update(patch).eq('id', donationId)
-    : db.from('donations').update(patch).eq('stripe_session_id', session.id);
-
-  const { data, error } = await query.select('*').maybeSingle();
-  if (error) throw error;
-
-  if (data) {
-    if (paid) await acknowledge(db, data);
-    return;
-  }
-
-  // Nothing matched -- record the gift rather than lose it. A gift Stripe took
-  // that we have no row for is the one outcome with no acceptable excuse.
-  const { data: inserted, error: insertError } = await db
-    .from('donations')
-    .insert({
-      ...patch,
-      donor_name: session.customer_details?.name ?? null,
-      donor_email: session.customer_details?.email ?? null,
-      amount_cents: session.amount_total ?? null,
-      currency: session.currency ?? 'usd',
-      is_recurring: Boolean(id(session.subscription)),
-      frequency: id(session.subscription) ? 'monthly' : 'one-time',
-      fund_designation: session.metadata?.fund_designation ?? 'general',
-      employer_match: session.metadata?.employer_match === 'true',
-      source: 'stripe',
-      metadata: {
-        reconstructed: true,
-        fund_label: session.metadata?.fund_label ?? null,
-      },
-    })
-    .select('*')
-    .single();
-  if (insertError) throw insertError;
-
-  if (paid) await acknowledge(db, inserted);
-}
 
 async function handleInvoice(db: Db, invoice: Obj): Promise<void> {
   // The first invoice of a subscription is already covered by the checkout
@@ -326,10 +259,11 @@ async function handleInvoice(db: Db, invoice: Obj): Promise<void> {
     return;
   }
 
-  // Inherit donor details from the original gift in this subscription.
+  // Inherit donor details from the original gift in this subscription. Not the
+  // note: that was written about the first gift, not every one after it.
   const { data: original } = await db
     .from('donations')
-    .select('donor_name, donor_email, fund_designation, employer_match, metadata')
+    .select('donor_name, donor_email, donor_phone, donor_address, fund_designation, employer_match, metadata')
     .eq('stripe_subscription_id', subscriptionId)
     .order('created_at', { ascending: true })
     .limit(1)
@@ -340,6 +274,8 @@ async function handleInvoice(db: Db, invoice: Obj): Promise<void> {
     .insert({
       donor_name: original?.donor_name ?? invoice.customer_name ?? null,
       donor_email: original?.donor_email ?? invoice.customer_email ?? null,
+      donor_phone: original?.donor_phone ?? invoice.customer_phone ?? null,
+      donor_address: original?.donor_address ?? addressFrom(invoice.customer_address),
       amount_cents: invoice.amount_paid ?? null,
       currency: invoice.currency ?? 'usd',
       is_recurring: true,
@@ -414,68 +350,4 @@ async function handleSubscription(db: Db, subscription: Obj): Promise<void> {
     .eq('id', original.id);
 
   if (error) throw error;
-}
-
-/**
- * Tell the donor, then tell staff. Neither is ever allowed to fail the webhook:
- * the card is already charged, and a 500 here would only make Stripe redeliver
- * an event we have already applied.
- *
- * Each side has its own marker column, so a half-success retries only the half
- * that failed rather than double-sending the half that worked.
- */
-async function acknowledge(db: Db, donation: Obj, subject?: string): Promise<void> {
-  if (!donation) return;
-
-  const label = donation.metadata?.fund_label ?? donation.fund_designation ?? 'General support';
-  const amount = money(donation.amount_cents);
-
-  if (!donation.receipt_sent_at && donation.donor_email) {
-    const receipt = await sendDonorReceipt({
-      donorName: donation.donor_name ?? '',
-      donorEmail: donation.donor_email,
-      amountCents: donation.amount_cents,
-      isRecurring: Boolean(donation.is_recurring),
-      fundLabel: label,
-      receiptUrl: donation.receipt_url,
-      date: (donation.created_at ?? new Date().toISOString()).slice(0, 10),
-    });
-    if (receipt.notified) {
-      await db.from('donations')
-        .update({ receipt_sent_at: new Date().toISOString() })
-        .eq('id', donation.id);
-    } else {
-      console.warn('donor_receipt_not_sent', donation.id, receipt.reason);
-    }
-  }
-
-  if (donation.notified) return;
-
-  const heading = subject ??
-    (donation.is_recurring ? 'New monthly donation' : 'New donation');
-
-  const result = await sendNotification(
-    `${heading} — ${amount}`,
-    [
-      ['Amount', donation.is_recurring ? `${amount} per month` : amount],
-      ['Frequency', donation.is_recurring ? 'Monthly recurring' : 'One-time'],
-      ['Donor', donation.donor_name ?? ''],
-      ['Email', donation.donor_email ?? ''],
-      ['Designation', label],
-      ['Employer match', donation.employer_match ? 'Yes — donor will submit paperwork' : 'No'],
-      ['Receipt', donation.receipt_url ?? ''],
-    ],
-    {
-      replyTo: donation.donor_email ?? undefined,
-      intro: `${donation.donor_name ?? 'A donor'} gave ${amount} through the website.`,
-      // A gift, not an enquiry -- goes to whoever reconciles donations.
-      audience: 'donations',
-    },
-  );
-
-  if (result.notified) {
-    await db.from('donations').update({ notified: true }).eq('id', donation.id);
-  } else {
-    console.warn('donation_not_notified', donation.id, result.reason);
-  }
 }

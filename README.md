@@ -68,6 +68,59 @@ and an event that is unpublished or has `rsvp_enabled = false` is refused.
 All three include an off-screen honeypot field (`_honeypot`); the function
 silently accepts and drops any submission that fills it.
 
+### The intake form
+
+"Start your intake" on `/contact` opens a **Google Form** — *Pivot Point
+Recovery — Clinical Intake*, in the shared drive, with its answers in the
+*Intake Responses* sheet beside it. It is a Google Form on purpose: what people
+tell us there is protected under 42 CFR Part 2 and never enters this database
+(see the boundary section below).
+
+That also put it outside everything above. Google emails only the form editors
+who have each switched on its per-person "Get email notifications for new
+responses" setting, so an intake could arrive and tell nobody — which is how
+Steve's test intake on 2026-10-05 went unnoticed while the contact form, the
+same day, notified him fine.
+
+An Apps Script on the form (`apps-script/intake-form/Code.gs`) closes the gap.
+On every submission it sends the `intake-webhook` function **the response's id
+and timestamp — never an answer**. The function then:
+
+1. adds a reference such as `INT-20261005-7F3A9C` to the Board Center intake
+   queue, with a follow-up date two business days out (the promise `/contact`
+   makes) and a link that opens that response in Google Forms;
+2. emails the standing notification list — the same people as the contact and
+   volunteer forms — with the reference, the time and that link.
+
+A re-delivered submission finds the row it already made instead of adding a
+second one, and is only emailed about again if the first email failed. If the
+website cannot be reached at all, the script falls back to Google's own mail
+and tells whoever installed it.
+
+**One-time setup**, by someone who can edit the form:
+
+1. Open the form → ⋮ → **Apps Script**. Replace the contents of `Code.gs` with
+   `apps-script/intake-form/Code.gs` and save.
+2. Choose `setup` in the toolbar and **Run**. Approve the permissions — it asks
+   for this one form only. The execution log prints a secret.
+3. Supabase dashboard → **Edge Functions → Secrets** → add
+   `INTAKE_WEBHOOK_SECRET` with that value.
+4. Run `sendTest`. Everyone on the notification list gets a test email.
+
+Until step 3 is done the function refuses every request (it fails closed), and
+the script's fallback email is what reaches people. Check the server side with:
+
+```sh
+curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/intake-webhook?health=1"
+```
+
+`configured: true` and a non-zero `recipients` count mean it is ready.
+
+Re-running `setup` is safe: it replaces its own trigger rather than adding a
+second, and keeps the secret it already made. Whoever runs it owns the trigger
+— if that person's Google account is ever closed, run `setup` again as someone
+else.
+
 ### Who receives the notification emails
 
 Two sources, unioned — the `notification_recipients` table and the
@@ -100,6 +153,10 @@ recipient and five look identical. It is how the omission below went unnoticed.
 > `erica@pivotpointrecovery.org` — the person asking where the notifications
 > were. Nothing reported this, because a send to the addresses that *were*
 > listed succeeds and returns `notified: true`.
+
+The table lists Erica and Steve (`20261006180000_intake_notifications.sql`).
+Steve had been mailed only through the secret until then — which worked, but
+was invisible to anyone reading the table.
 
 The secret still works and is still read:
 
@@ -340,6 +397,13 @@ surface — the reason it was split from the portal in the first place
 itself stays in the system that collected it. Do not add answer columns to this
 table without a compliance decision that is written down somewhere.
 
+Entries arrive by themselves now — one per Google Form submission, through
+`intake-webhook` (see "The intake form" above) — rather than relying on
+someone to type a reference in. `source_url` is the link back to that response
+in Google Forms, which opens only for people the form is shared with; following
+it from the drawer is written to the activity log as an `open`. "+ Add to the
+queue" still works for an intake that arrived some other way.
+
 > **A PostgREST trap worth knowing.** An `UPDATE` or `DELETE` that RLS filters
 > to zero rows answers **204, no error** — indistinguishable from success. A
 > revoked editor would have been told "Saved" while nothing was written. Every
@@ -376,6 +440,7 @@ because they are public endpoints; they authenticate by origin, honeypot, and
 | --- | --- |
 | `donations-checkout` | Validates the gift, writes a `pending` row, opens a Stripe Checkout session |
 | `donations-webhook` | Confirms the gift from Stripe, emails the donor a receipt and staff a notification |
+| `donations-reconcile` | Every 15 minutes, asks Stripe about any gift still `pending` and settles it; also the Board Center's "Send receipt" |
 
 ### What the checkout function decides, not the browser
 
@@ -391,6 +456,26 @@ attributable even if Stripe errors, and its id is used as the Stripe
 idempotency key — a double-submitted form cannot double-charge. Stripe metadata
 carries donor and fund fields only; no participant identifiers ever cross into
 it.
+
+### What we keep about a donor
+
+Name and email (required), phone and a note of up to 500 characters (both
+optional, typed on `donate.html`), and a full mailing address — Checkout runs
+with `billing_address_collection: 'required'`, and the webhook copies what
+Stripe collected into `donor_address`. The phone and the note stay in our
+database and are **never sent to Stripe**: a note is free text, and "in memory
+of my brother" can name somebody we serve.
+
+All of it is finance-only, like the rest of the donor row. The Board Center's
+Giving section opens each gift to show it — contact details, the note, the
+fund, whether a receipt went out, and a link to the payment in Stripe — and
+the staff notification email carries the same.
+
+The email check on both the page and the function now insists on a real
+domain. The looser `x@y.z` shape let `name@example,.org` through; Stripe
+accepted it, and the mail provider then refused the receipt *and* the staff
+notification, because the bad address was also the reply-to. A malformed
+reply-to is now dropped rather than allowed to sink the staff email.
 
 ### The webhook
 
@@ -420,6 +505,35 @@ nothing. Monthly renewals — the one donation with no checkout session behind i
 — are keyed on the invoice id instead, which is what stops a redelivered
 `invoice.paid` booking the same gift twice.
 
+### When the webhook is not enough
+
+A webhook is a delivery, and deliveries get lost. Stripe disabled the site's
+first endpoint after its deliveries kept failing, and every gift from
+2026-08-20 until the replacement endpoint on 2026-09-25 stayed `pending` —
+charged by Stripe, missing from the dashboard, never receipted. Ten gifts,
+$1,760, found on 2026-10-06 by comparing Stripe with the database.
+
+`donations-reconcile` is the net under the webhook. pg_cron calls it every 15
+minutes (`20261006192000_reconcile_schedule.sql`); it looks up every gift still
+`pending` ten minutes after checkout and settles it from Stripe's answer,
+through the same code the webhook uses. What it does with a gift it finds:
+
+| Found | Recorded | Donor receipt | Staff told |
+| --- | --- | --- | --- |
+| within 3 days | yes | sent, as normal | the usual "New donation" email |
+| later than that | yes | **held** — "Send receipt" on the gift in Giving | one summary email per run |
+
+The late case is held on purpose: a receipt weeks after the fact is a person's
+call, not a side effect of a timer. The schedule proves itself to the function
+with a token kept in Vault and compared inside the database
+(`reconcile_token_matches`); the function never holds a copy. Finance can also
+call it from a signed-in session — dry run unless `apply: true`.
+
+If a gift has waited on Stripe for more than a day, the dashboard says so:
+checkouts expire after 24 hours, so that only happens when the check itself
+has stopped. `select * from cron.job_run_details order by start_time desc
+limit 5;` shows its recent runs.
+
 ### Receipts
 
 On a confirmed gift the webhook sends the donor a 501(c)(3) acknowledgement
@@ -428,6 +542,10 @@ IRS wants) and notifies staff separately. The two are tracked in different
 columns — `receipt_sent_at` and `notified` — so if one send fails the retry
 only repeats the half that failed, and no donor is thanked twice. Set
 `DONOR_RECEIPTS=0` to suppress donor receipts and keep staff notifications.
+
+A gift with no receipt is flagged at the top of Giving, and its drawer has a
+**Send receipt** button (finance only, with a confirmation; sending a second
+time asks again). Each send is written to the activity log.
 
 ## Backend
 
@@ -443,10 +561,12 @@ supabase/
                           Center: staff_members, activity_log,
                           record_notes, intake_queue, board_documents)
   functions/
-    _shared/             http (CORS), db, env, validate, notify, stripe
+    _shared/             http (CORS), db, env, validate, notify, stripe, donations
     admin-users/         team sign-ins and passwords (admin only)
+    intake-webhook/      Google Form intake -> queue + staff email
     public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
+    donations-reconcile/ settles gifts the webhook missed (pg_cron, 15 min)
     donations-webhook/   confirms gifts, sends receipts
 ```
 
@@ -456,13 +576,16 @@ Deploy with the Supabase CLI:
 supabase link --project-ref ihgwhglatsbhngbsezuj
 supabase db push
 supabase functions deploy admin-users                     # JWT verification ON
+supabase functions deploy intake-webhook    --no-verify-jwt
 supabase functions deploy public-forms      --no-verify-jwt
 supabase functions deploy donations-checkout --no-verify-jwt
 supabase functions deploy donations-webhook  --no-verify-jwt
+supabase functions deploy donations-reconcile --no-verify-jwt
 ```
 
 `--no-verify-jwt` is required: these are public endpoints called by anonymous
-visitors and by Stripe, neither of which carries a Supabase JWT.
+visitors, by Stripe and by Google Apps Script, none of which carries a Supabase
+JWT. Each authenticates its caller itself.
 
 > The events schema, its seed row, and the `public-forms` function carrying the
 > `event_rsvp` handler were applied to the live project on 2026-08-22 and
@@ -480,9 +603,10 @@ short alias list, so a name that is *close* still works — but check
 | --- | --- | --- |
 | `STRIPE_SECRET_KEY` | checkout, webhook | Checkout returns 502; no gift can be made |
 | `STRIPE_WEBHOOK_SECRET` | webhook | **Set.** If removed, falls back to re-fetch-only verification |
-| `RESEND_API_KEY` | all three | Rows save, no mail |
-| `NOTIFICATION_EMAILS` | all three | Only the `notification_recipients` table is used; if that is empty too, staff are not told |
-| `RESEND_FROM` | all three | Falls back to Resend's sandbox sender (403 to anyone but the account owner) |
+| `RESEND_API_KEY` | forms, webhook, intake | Rows save, no mail |
+| `NOTIFICATION_EMAILS` | forms, webhook, intake | Only the `notification_recipients` table is used; if that is empty too, staff are not told |
+| `RESEND_FROM` | forms, webhook, intake | Falls back to Resend's sandbox sender (403 to anyone but the account owner) |
+| `INTAKE_WEBHOOK_SECRET` | intake | Every intake call is refused (503); the Apps Script falls back to Google's own mail |
 | `SITE_URL` | checkout, webhook | Defaults to `https://pivotpointrecovery.org` |
 | `DONOR_RECEIPTS` | webhook | Receipts on; set `0` to suppress |
 | `ALLOWED_ORIGINS` | all three | Defaults to the production hosts + `*.pages.dev` + localhost |
@@ -490,7 +614,7 @@ short alias list, so a name that is *close* still works — but check
 Health-check every function at once:
 
 ```sh
-for fn in public-forms donations-checkout donations-webhook; do
+for fn in public-forms intake-webhook donations-checkout donations-webhook donations-reconcile; do
   echo -n "$fn: "
   curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/$fn?health=1"; echo
 done
