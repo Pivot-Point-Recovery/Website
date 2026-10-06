@@ -101,6 +101,41 @@ function onIntakeSubmit(e) {
     (result.error || result.reason || 'no reason given'));
 }
 
+/** One-time catch-up: sends every response already on the form through the
+ *  same path a new submission takes. The trigger only sees submissions made
+ *  after setup, so anything earlier never reached the Board Center queue.
+ *
+ *  Safe to re-run. The website recognises a response it has already queued and
+ *  does not email about it twice. Each response not yet queued does produce
+ *  one staff email, the same one a new intake sends, so the list hears about
+ *  intakes that arrived before notifications existed. */
+function backfillExisting() {
+  const form = FormApp.getActiveForm();
+  const responses = form.getResponses();
+  const counts = { added: 0, already: 0, failed: 0 };
+
+  responses.forEach((response) => {
+    const result = post_({
+      form_id: form.getId(),
+      response_id: response.getId(),
+      submitted_at: response.getTimestamp().toISOString(),
+    });
+    if (!result.ok) {
+      counts.failed++;
+      console.error('Could not send a response from ' + response.getTimestamp() + ': ' + result.error);
+    } else if (result.duplicate) {
+      counts.already++;
+    } else {
+      counts.added++;
+      console.log('Added ' + result.ref + (result.notified ? '' : ' (staff email did not send: ' + result.reason + ')'));
+    }
+  });
+
+  console.log(responses.length + ' responses on the form: ' + counts.added + ' added to the Board Center, ' +
+    counts.already + ' already there, ' + counts.failed + ' failed.');
+  if (counts.failed) throw new Error(counts.failed + ' responses could not be sent. Run backfillExisting again.');
+}
+
 /** POSTs to the website. Never throws: every outcome comes back as an object
  *  with `ok`, and a server error or a dropped connection is retried twice. */
 function post_(body) {
