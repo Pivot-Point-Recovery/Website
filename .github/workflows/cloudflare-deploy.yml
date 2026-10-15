@@ -126,7 +126,7 @@ jobs:
           cp *.html *.css *.js *.svg veteran.jpeg _headers _site/
           echo "staged:"; ls -1 _site
           # The pages that read the events table are inert without events.js.
-          for required in index.html events.html event.html openmic.html admin.html styles.css main.js events.js _headers; do
+          for required in index.html events.html event.html openmic.html admin.html styles.css main.js events.js board-center.js board-center.css board-recorder.js _headers; do
             [ -f "_site/$required" ] || { echo "::error::$required missing from the deploy payload"; exit 1; }
           done
 

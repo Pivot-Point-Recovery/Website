@@ -29,6 +29,13 @@ verify_jwt = false
 [functions.intake-webhook]
 verify_jwt = false
 
+# Meetings: transcription and Claude's draft of the minutes. Called only from
+# the Board Center, but its ?health=1 check must answer without a session like
+# every other function's. Every action authenticates the caller itself, against
+# public.is_member() with the caller's own token.
+[functions.meeting-minutes]
+verify_jwt = false
+
 # The Monday summary email. Called by pg_cron, which holds no user session, and
 # by an administrator previewing it from the Board Center. It authenticates both
 # itself: the scheduler's token against Vault, a person's session against

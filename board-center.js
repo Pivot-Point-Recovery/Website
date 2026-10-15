@@ -17,6 +17,9 @@
   var ADMIN_FN = SUPABASE_URL + '/functions/v1/admin-users';
   var RECONCILE_FN = SUPABASE_URL + '/functions/v1/donations-reconcile';
   var DIGEST_FN = SUPABASE_URL + '/functions/v1/board-digest';
+  var MEETING_FN = SUPABASE_URL + '/functions/v1/meeting-minutes';
+  var STORAGE = SUPABASE_URL + '/storage/v1';
+  var AUDIO_BUCKET = 'meeting-audio';
   var NOT_ALLOWED = 'Nothing was saved — your account is not allowed to make that change. Ask Erica to check your access.';
 
   var session = null;
@@ -29,6 +32,18 @@
   var view = 'dashboard';
   var sub = '';
   var cache = {};
+  // Meetings: which one is open, what the server can do, and the poll that
+  // watches a transcription or a draft finish.
+  var meetingId = null;
+  var meetingConfig = null;
+  var pollTimer = null;
+  var minutesDirty = false;
+  // The signed-in person's open tasks, for the nav badge and the dashboard.
+  // null when the tasks table is not there yet.
+  var myTasks = null;
+  var myTasksFresh = false;
+  // The recording bar's state -- see renderRecBar().
+  var recUi = null;
 
   // ------------------------------------------------------------------ utils
   function esc(s) {
@@ -260,10 +275,13 @@
     giving: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M9.5 10h5M9.5 14h5"/>',
     boardroom: '<path d="M3 20h18"/><path d="M5 20V9l7-5 7 5v11"/><path d="M10 20v-6h4v6"/>',
     activity: '<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',
+    tasks: '<rect x="3.5" y="4" width="5" height="5" rx="1"/><path d="m4.8 6.5 1.1 1.1 1.9-2.1"/><path d="M12 6.5h8.5"/><rect x="3.5" y="14" width="5" height="5" rx="1"/><path d="M12 16.5h8.5"/>',
+    meetings: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21M8.5 21h7"/>',
   };
   var NAV = [
     { group: 'Overview', items: [
       { id: 'dashboard', label: 'Dashboard' },
+      { id: 'tasks', label: 'Tasks' },
     ] },
     { group: 'Who we know', items: [
       { id: 'people', label: 'People' },
@@ -274,10 +292,16 @@
     ] },
     { group: 'The board', items: [
       { id: 'boardroom', label: 'Board room' },
+      { id: 'meetings', label: 'Meetings' },
       { id: 'activity', label: 'Activity log', admin: true },
     ] },
   ];
   var SUBS = {
+    tasks: [
+      { id: 'mine', label: 'Mine' },
+      { id: 'open', label: 'Everyone’s open tasks' },
+      { id: 'done', label: 'Done' },
+    ],
     people: [
       { id: 'contacts',   label: 'Contacts' },
       { id: 'volunteers', label: 'Volunteers' },
@@ -297,6 +321,9 @@
         var badge = '';
         if (it.id === 'people' && summary && summary.enquiries.unanswered > 0) {
           badge = '<span class="count">' + summary.enquiries.unanswered + '</span>';
+        }
+        if (it.id === 'tasks' && myTasks && myTasks.open > 0) {
+          badge = '<span class="count">' + myTasks.open + '</span>';
         }
         return '<button class="bc-navitem" data-view="' + it.id + '"' +
           (view === it.id ? ' aria-current="page"' : '') + '>' +
@@ -441,6 +468,21 @@
       attn.push({ k: '', sev: 'For info',
         t: plural(s.events.drafts, 'event is', 'events are') + ' still a draft',
         s: 'Not visible on the website yet', w: '', go: 'events' });
+    }
+    if (myTasks && myTasks.overdue > 0) {
+      attn.unshift({ k: 'crit', sev: 'Needs action',
+        t: plural(myTasks.overdue, 'of your tasks is', 'of your tasks are') + ' overdue',
+        s: 'Past the date somebody agreed to have it done by', w: '', go: 'tasks', goSub: 'mine' });
+    } else if (myTasks && myTasks.open > 0) {
+      attn.push({ k: '', sev: 'For info',
+        t: 'You have ' + plural(myTasks.open, 'open task', 'open tasks'),
+        s: myTasks.nextDue ? 'The next is due ' + dayLine(myTasks.nextDue + 'T12:00:00Z') : 'None of them has a due date',
+        w: '', go: 'tasks', goSub: 'mine' });
+    }
+    if (myTasks && myTasks.drafts > 0) {
+      attn.push({ k: '', sev: 'For info',
+        t: plural(myTasks.drafts, 'set of minutes is', 'sets of minutes are') + ' waiting to be approved',
+        s: 'Drafted from a meeting, not yet the record', w: '', go: 'meetings' });
     }
     if (!attn.length) {
       attn.push({ k: '', sev: 'All clear', t: 'Nothing is waiting on anybody',
@@ -760,6 +802,935 @@
               '<td class="ago">' + esc(ago(r.at)) + '</td></tr>';
           }).join('') : '', 'Nothing logged yet.'));
   };
+
+  // ------------------------------------------------------ meetings & tasks
+  // Google Meet stopped recording and taking notes in June 2026, when the
+  // Workspace account moved to the no-cost nonprofit edition (it has neither).
+  // So meetings are recorded here: in the room, or an online call's tab. The
+  // meeting-minutes function transcribes the recording and Claude drafts the
+  // minutes; a person corrects and approves them, and confirms which action
+  // items become tasks. Nothing is final until a person says so.
+  var MEETING_KINDS = { board: 'Board', committee: 'Committee', staff: 'Staff', other: 'Other' };
+  // The project's per-file upload limit on the free plan.
+  var MAX_UPLOAD = 50 * 1024 * 1024;
+  var DRAFT_STALE_MS = 4 * 60000;
+  var AUDIO_TYPES = {
+    webm: 'audio/webm', weba: 'audio/webm', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+    m4a: 'audio/mp4', mp4: 'video/mp4', aac: 'audio/aac', mp3: 'audio/mpeg', wav: 'audio/wav',
+    flac: 'audio/flac', mov: 'video/quicktime',
+  };
+  var AUDIO_EXT = {
+    'audio/webm': 'webm', 'video/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a',
+    'audio/m4a': 'm4a', 'video/mp4': 'mp4', 'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
+    'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/flac': 'flac', 'video/quicktime': 'mov',
+  };
+
+  /** Where a meeting has got to, as one pill. */
+  function meetingStage(m) {
+    if (m.minutes_status === 'approved') return ['ok', 'Minutes approved'];
+    if (m.minutes_status === 'draft') return ['warn', 'Draft to review'];
+    if (m.minutes_status === 'drafting') return ['info', 'Drafting'];
+    if (m.minutes_status === 'error') return ['stop', 'Draft failed'];
+    if (m.transcript_status === 'processing') return ['info', 'Transcribing'];
+    if (m.transcript_status === 'error') return ['stop', 'Transcript failed'];
+    if (m.transcript_status === 'completed') return ['new', 'Ready to draft'];
+    if (m.audio_path) return ['new', 'Ready to transcribe'];
+    return ['flat', 'No recording yet'];
+  }
+  function meetingPill(m) {
+    var live = recUi && recUi.meetingId === m.id &&
+      (recUi.phase === 'recording' || recUi.phase === 'paused' || recUi.phase === 'saving');
+    var s = live ? ['stop', recUi.phase === 'saving' ? 'Saving the recording' : 'Recording now'] : meetingStage(m);
+    return '<span class="bc-pill ' + s[0] + '">' + esc(s[1]) + '</span>';
+  }
+  function hms(seconds) {
+    var s = Math.max(0, Math.round(seconds || 0));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    if (h) return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+    return m ? m + ' min' : s + ' sec';
+  }
+  function clock(ms) {
+    var s = Math.max(0, Math.floor((ms || 0) / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    var two = function (n) { return (n < 10 ? '0' : '') + n; };
+    return (h ? h + ':' + two(m) : m) + ':' + two(r);
+  }
+  function fileSize(bytes) {
+    var mb = (bytes || 0) / 1048576;
+    return mb >= 10 ? Math.round(mb) + ' MB' : mb >= 1 ? mb.toFixed(1) + ' MB' : Math.max(1, Math.round((bytes || 0) / 1024)) + ' KB';
+  }
+  /** A calendar day held as YYYY-MM-DD, for people. */
+  function dayOf(day) { return day ? dayLine(day + 'T12:00:00Z') : ''; }
+  /** "Steve — CEO" is Steve here. */
+  function personName(email) {
+    if (!email) return '';
+    var lower = String(email).toLowerCase();
+    var t = (cache.team || []).filter(function (x) { return String(x.email).toLowerCase() === lower; })[0];
+    return String((t && t.label) || lower.split('@')[0]).split(/\s+[–—-]\s+/)[0];
+  }
+  function personOptions(selected) {
+    var current = String(selected || '').toLowerCase();
+    var team = (cache.team || []).filter(function (t) {
+      return t.active || String(t.email).toLowerCase() === current;
+    });
+    return '<option value=""' + (current ? '' : ' selected') + '>Nobody yet</option>' +
+      team.map(function (t) {
+        var v = String(t.email).toLowerCase();
+        return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' +
+          esc(t.label || t.email) + '</option>';
+      }).join('');
+  }
+  function dueText(task, today) {
+    if (!task.due_on) return '<span class="ago">No date</span>';
+    var late = task.status !== 'done' && task.due_on < today;
+    return '<span style="font-size:.85rem;white-space:nowrap;' +
+      (late ? 'color:var(--bc-stop-fg);font-weight:600' : 'color:var(--color-text-mid)') + '">' +
+      esc(dayOf(task.due_on)) + (late ? ' · overdue' : '') + '</span>';
+  }
+  function notSwitchedOn(what) {
+    return '<div class="bc-gate hard"><h2>' + esc(what) + ' are not switched on yet</h2><p>This part of the ' +
+      'Board Center needs a database update that has not been applied. Whoever looks after the website runs ' +
+      '<code>supabase db push</code> and deploys the <code>meeting-minutes</code> function — see the README, ' +
+      '“Meetings, minutes and tasks”.</p></div>';
+  }
+
+  /** A table this release adds does not exist until its migration has run,
+   *  and PostgREST answers 404 for it. That means "not set up yet", which the
+   *  page says plainly, rather than "broken". */
+  async function getOptional(path) {
+    var res = await authFetch(REST + path);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('Could not load that. Please try again.');
+    return await res.json();
+  }
+
+  async function callMeetingFn(body) {
+    var res = await authFetch(MEETING_FN, { method: 'POST', body: JSON.stringify(body) });
+    var data = await res.json().catch(function () { return {}; });
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'That did not work. Please try again.');
+    return data;
+  }
+  /** Which of transcription and drafting the server has keys for. Asked once. */
+  async function loadMeetingConfig() {
+    if (meetingConfig) return meetingConfig;
+    try {
+      meetingConfig = await callMeetingFn({ action: 'config' });
+    } catch (err) {
+      return { transcription: false, drafting: false, unreachable: true };
+    }
+    return meetingConfig;
+  }
+
+  async function loadMyTasks() {
+    myTasksFresh = true;
+    try {
+      var rows = await getOptional('/meeting_tasks?select=id,due_on&status=eq.open&assignee_email=eq.' +
+        encodeURIComponent(me.jwtEmail));
+      if (rows === null) { myTasks = null; return; }
+      var drafts = await getOptional('/meetings?select=id&minutes_status=eq.draft');
+      var today = localDate();
+      var dated = rows.filter(function (r) { return r.due_on; }).map(function (r) { return r.due_on; }).sort();
+      myTasks = {
+        open: rows.length,
+        overdue: dated.filter(function (d) { return d < today; }).length,
+        nextDue: dated.filter(function (d) { return d >= today; })[0] || null,
+        drafts: drafts ? drafts.length : 0,
+      };
+    } catch (err) { myTasks = null; }
+  }
+
+  /** Repaints whatever shows tasks, without the "Loading…" flash. */
+  async function refreshAfterTaskChange() {
+    myTasksFresh = false;
+    await loadMyTasks();
+    if (view === 'meetings' && meetingId) {
+      await reloadMeeting();
+      paintMeeting();
+    } else if (view === 'tasks') {
+      await LOADERS.tasks();
+      $('bcContent').innerHTML = V.tasks();
+    } else {
+      await render();
+    }
+    renderNav();
+  }
+  async function setTaskStatus(id, done, box) {
+    if (box) box.disabled = true;
+    try {
+      await writeRows(REST + '/meeting_tasks?id=eq.' + encodeURIComponent(id), 'PATCH', { status: done ? 'done' : 'open' });
+      logActivity('update', 'meeting_tasks', id, { status: done ? 'done' : 'open' });
+      showToast(done ? 'Marked done.' : 'Reopened.', 'success');
+      await refreshAfterTaskChange();
+    } catch (err) {
+      if (box) { box.checked = !done; box.disabled = false; }
+      showToast(err.message, 'error');
+    }
+  }
+
+  // ------------------------------------------------------------- tasks view
+  V.tasks = function () {
+    var title = 'Tasks';
+    var subtitle = 'What people have taken on — from a meeting’s minutes, or added here.';
+    if (cache.tasksOff) return head(title, subtitle) + notSwitchedOn('Tasks');
+    var rows = cache.tasks || [];
+    var today = localDate();
+    var done = sub === 'done';
+    var from = function (r) {
+      var m = r.meetings;
+      return m ? 'From ' + m.title + ' · ' + dayOf(m.held_on) : (r.detail ? String(r.detail).slice(0, 90) : '');
+    };
+    var heads = done
+      ? '<th>Task</th><th>Done by</th><th>When</th>'
+      : '<th><span class="bc-sr">Done</span></th><th>Task</th><th>Who</th><th>Due</th>';
+    var empty = sub === 'mine' ? 'Nothing is assigned to you. Tasks from meetings land here once somebody confirms them.'
+      : done ? 'Nothing has been marked done yet.' : 'No open tasks.';
+    return head(title, subtitle,
+        '<button class="btn btn-primary btn-small" data-task-new="1">+ New task</button>') +
+      tabs('tasks') +
+      card(sub === 'mine' ? 'Assigned to you' : done ? 'Done' : 'Open tasks',
+        plural(rows.length, 'task', 'tasks') + (done ? ', most recent first' : ', soonest due first'),
+        table(heads, rows.length ? rows.map(function (r) {
+          var note = from(r);
+          var name = rowLink('task', r.id, esc(r.title)) + (note ? '<span class="sc">' + esc(note) + '</span>' : '');
+          if (done) {
+            return '<tr class="click" data-drawer="task" data-id="' + esc(r.id) + '"><td>' + name + '</td>' +
+              '<td>' + owner(r.completed_by) + '</td><td class="ago">' + esc(ago(r.completed_at)) + '</td></tr>';
+          }
+          return '<tr class="click" data-drawer="task" data-id="' + esc(r.id) + '">' +
+            '<td class="bc-checkcell"><input type="checkbox" class="bc-check" data-task-done="' + esc(r.id) + '" ' +
+            'aria-label="Mark “' + esc(r.title) + '” done"></td>' +
+            '<td>' + name + '</td><td>' + owner(r.assignee_email) + '</td><td>' + dueText(r, today) + '</td></tr>';
+        }).join('') : '', empty));
+  };
+
+  /** The task form, for a new task or an existing one. */
+  function taskForm(t, forMeeting) {
+    t = t || {};
+    var id = t.id || '';
+    return '<div class="bc-dsec"><h3>' + (id ? 'The task' : 'What needs doing') + '</h3>' +
+      '<label class="bc-field">Task<input class="bc-input" id="tkTitle" maxlength="300" value="' + esc(t.title || '') +
+      '" placeholder="Start with a verb: “Send the audit letter to the bank”"></label>' +
+      '<label class="bc-field">Details<textarea class="bc-input" id="tkDetail" rows="3" ' +
+      'placeholder="Anything the person needs to know">' + esc(t.detail || '') + '</textarea></label>' +
+      '<div class="bc-fieldrow"><label class="bc-field">Who<select class="bc-input" id="tkWho">' +
+      personOptions(t.assignee_email) + '</select></label>' +
+      '<label class="bc-field">Due<input type="date" class="bc-input" id="tkDue" value="' + esc(t.due_on || '') + '"></label></div>' +
+      '<div class="bc-actions"><button class="btn btn-blue btn-small" data-task-save="' + esc(id) + '" ' +
+      'data-task-meeting="' + esc(forMeeting || t.meeting_id || '') + '">' + (id ? 'Save' : 'Add the task') +
+      '</button></div></div>';
+  }
+
+  // ---------------------------------------------------------- meetings view
+  V.meetings = function () {
+    if (cache.meetingsOff) {
+      return head('Meetings', 'Record a meeting, get a draft of the minutes, and turn what was agreed into tasks.') +
+        notSwitchedOn('Meetings');
+    }
+    return meetingId ? meetingDetail() : meetingList();
+  };
+
+  function setupGate() {
+    var c = cache.config || {};
+    if (c.transcription && c.drafting) return '';
+    if (c.unreachable) {
+      return '<div class="bc-gate hard"><h2>The meetings service is not answering</h2><p>Recording and uploading ' +
+        'still work, and recordings are kept. Transcription and drafting need the <code>meeting-minutes</code> ' +
+        'function deployed — see the README.</p></div>';
+    }
+    var missing = [];
+    if (!c.transcription) missing.push('transcribing recordings (an AssemblyAI key)');
+    if (!c.drafting) missing.push('drafting minutes with Claude (an Anthropic key)');
+    return '<div class="bc-gate"><h2>Not everything is set up yet</h2><p>Still to do: ' + esc(missing.join(' and ')) +
+      '. Until then you can record and keep meetings' + (c.drafting ? ', and paste a transcript from Google Meet, ' +
+      'Zoom or Tactiq to have the minutes drafted' : '') + '. Whoever looks after the website adds the keys — see ' +
+      'the README.</p></div>';
+  }
+
+  function meetingList() {
+    var rows = cache.meetings || [];
+    var openBy = cache.openByMeeting || {};
+    return head('Meetings', 'Record a meeting, get a draft of the minutes, and turn what was agreed into tasks.',
+        '<button class="btn btn-primary btn-small" data-meeting-form="record">● Record a meeting</button>' +
+        '<button class="btn btn-outline btn-small" data-meeting-form="upload">Upload a recording</button>' +
+        '<button class="btn btn-outline btn-small" data-meeting-form="paste">Paste a transcript</button>') +
+      setupGate() +
+      card('Meetings', plural(rows.length, 'meeting', 'meetings'),
+        table('<th>Meeting</th><th>Date</th><th>Recording</th><th>Where it’s got to</th><th>Open tasks</th>',
+          rows.length ? rows.map(function (m) {
+            return '<tr class="click" data-view="meetings" data-meeting="' + esc(m.id) + '">' +
+              '<td><button type="button" class="nm bc-rowlink" data-view="meetings" data-meeting="' + esc(m.id) + '">' +
+              esc(m.title) + '</button><span class="sc">' + esc(MEETING_KINDS[m.kind] || 'Meeting') + '</span></td>' +
+              '<td style="font-size:.85rem;color:var(--color-text-mid);white-space:nowrap">' + esc(dayOf(m.held_on)) + '</td>' +
+              '<td style="font-size:.85rem;color:var(--color-text-mid)">' +
+              (m.audio_path ? esc(m.duration_seconds ? hms(m.duration_seconds) : 'Yes') : '—') + '</td>' +
+              '<td>' + meetingPill(m) + '</td>' +
+              '<td class="r">' + (openBy[m.id] || '—') + '</td></tr>';
+          }).join('') : '',
+          'No meetings yet. Record one, upload a recording, or paste a transcript from Google Meet, Zoom or Tactiq.')) +
+      '<div class="bc-gate"><h2>Business meetings only</h2><p>Record board, committee and staff business meetings. ' +
+      'Don’t record a meeting where somebody we serve is discussed — case reviews and supervision stay out of the ' +
+      'Board Center, the same as intake answers, because they are protected under 42 CFR Part 2. If a name slips ' +
+      'out anyway, the draft says “a participant” and the meeting is flagged.</p>' +
+      '<p style="font-size:.83rem;color:var(--bc-ink-soft)">Recordings are private to the team. Once the minutes ' +
+      'are approved, delete the recording: the minutes are the record, and keeping people’s words longer than ' +
+      'needed helps nobody.</p></div>';
+  }
+
+  function meetingDetail() {
+    var m = cache.meeting;
+    var back = '<div><button class="btn btn-ghost btn-small" data-view="meetings" style="padding-left:0">' +
+      '← All meetings</button></div>';
+    if (!m) {
+      return back + '<div class="bc-gate hard"><h2>That meeting is not here</h2><p>It may have been deleted.</p></div>';
+    }
+    var c = cache.config || {};
+    var approved = m.minutes_status === 'approved';
+    var hasTranscript = m.transcript_status === 'completed';
+    var canDelete = !approved || me.canAdmin;
+    var line = [MEETING_KINDS[m.kind] || 'Meeting', dayOf(m.held_on)];
+    if (m.duration_seconds) line.push(hms(m.duration_seconds));
+
+    var out = back + head(m.title, esc(line.join(' · ')),
+      '<button class="btn btn-outline btn-small" data-meeting-form="edit" data-id="' + esc(m.id) + '">Edit details</button>' +
+      (canDelete ? '<button class="btn btn-ghost btn-small admin-danger" data-meeting-del="' + esc(m.id) + '">Delete</button>' : ''));
+
+    if (m.mentions_participants) {
+      out += '<div class="bc-gate hard"><h2>Somebody we serve came up in this meeting</h2><p>Claude left their name ' +
+        'out of the draft and wrote “a participant” instead. Check the minutes say nothing that could identify them ' +
+        'before anybody approves or shares them, and delete the recording and transcript once the minutes are ' +
+        'approved.</p></div>';
+    }
+
+    // 1. Recording
+    var rec;
+    if (m.audio_path) {
+      rec = '<div class="bc-pad bc-stack"><p class="bc-meta">Recorded' +
+        (m.duration_seconds ? ' · ' + esc(hms(m.duration_seconds)) : '') +
+        (m.audio_bytes ? ' · ' + esc(fileSize(m.audio_bytes)) : '') +
+        (m.consent_confirmed ? ' · Everyone was told it was being recorded' : '') + '</p>' +
+        '<div id="mtAudio"></div><div class="bc-actions">' +
+        '<button class="btn btn-outline btn-small" data-audio-play="1">Play the recording</button>' +
+        '<button class="btn btn-ghost btn-small admin-danger" data-audio-del="1">Delete the recording</button></div></div>';
+    } else {
+      rec = '<div class="bc-pad bc-stack"><p class="bc-meta">' +
+        (m.transcript_source === 'pasted' ? 'No recording — the transcript was pasted in.' : 'No recording on this meeting.') +
+        '</p><div class="bc-actions"><button class="btn btn-outline btn-small" data-meeting-form="upload" data-id="' +
+        esc(m.id) + '">Upload a recording</button></div></div>';
+    }
+    out += card('1 · Recording', null, rec);
+
+    // 2. Transcript
+    var tr;
+    if (m.transcript_status === 'processing') {
+      tr = '<p class="bc-working"><span class="spinner dark"></span> Transcribing. An hour of audio usually takes a ' +
+        'few minutes. You can leave this page — it carries on without you.</p>';
+    } else if (m.transcript_status === 'error') {
+      tr = '<div class="bc-pad bc-stack"><p class="bc-warnline">' + esc(m.transcript_error || 'The recording could not be transcribed.') +
+        '</p><div class="bc-actions"><button class="btn btn-blue btn-small" data-transcribe="1">Try again</button>' +
+        '<button class="btn btn-outline btn-small" data-meeting-form="paste" data-id="' + esc(m.id) + '">Paste a transcript instead</button></div></div>';
+    } else if (hasTranscript) {
+      tr = transcriptBlock(m);
+    } else if (m.audio_path) {
+      tr = '<div class="bc-pad bc-stack">' + (c.transcription
+        ? '<p class="bc-meta">The recording has not been transcribed yet.</p><div class="bc-actions">' +
+          '<button class="btn btn-blue btn-small" data-transcribe="1">Transcribe the recording</button></div>'
+        : '<p class="bc-meta">Transcription is not set up yet. Paste a transcript instead, or come back once it is.</p>' +
+          '<div class="bc-actions"><button class="btn btn-outline btn-small" data-meeting-form="paste" data-id="' +
+          esc(m.id) + '">Paste a transcript</button></div>') + '</div>';
+    } else {
+      tr = '<div class="bc-pad bc-stack"><p class="bc-meta">Paste the transcript from Google Meet, Zoom, Tactiq or ' +
+        'Read.ai, or upload a recording above.</p><div class="bc-actions"><button class="btn btn-outline btn-small" ' +
+        'data-meeting-form="paste" data-id="' + esc(m.id) + '">Paste a transcript</button></div></div>';
+    }
+    out += card('2 · Transcript', m.transcript_source === 'pasted' && hasTranscript ? 'Pasted in' : null, tr);
+
+    // 3. Minutes
+    out += card('3 · Minutes', approved && m.approved_at
+      ? 'Approved by ' + esc(personName(m.approved_by) || 'the team') + ' ' + esc(ago(m.approved_at)) : null,
+      minutesBlock(m, hasTranscript, c));
+
+    // 4. Action items
+    out += actionItems(m);
+    return out;
+  }
+
+  function transcriptBlock(m) {
+    var names = m.speaker_names || {};
+    var body = '<div class="bc-pad bc-stack">';
+    if (Array.isArray(m.transcript) && m.transcript.length) {
+      // Who is speaking: the transcriber hears voices, not names. Once the
+      // minutes are approved the names have done their job.
+      var naming = m.minutes_status !== 'approved';
+      var bySpeaker = {};
+      m.transcript.forEach(function (u) {
+        var s = bySpeaker[u.speaker] = bySpeaker[u.speaker] || { lines: 0, ms: 0, sample: '' };
+        s.lines++;
+        s.ms += Math.max(0, (u.end || 0) - (u.start || 0));
+        if (!s.sample && String(u.text).split(/\s+/).length >= 6) s.sample = u.text;
+      });
+      var labels = Object.keys(bySpeaker).sort();
+      var unnamed = labels.filter(function (l) { return !String(names[l] || '').trim(); }).length;
+      if (naming) body += '<div class="bc-speakers"><p class="bc-meta"><strong>Who is speaking?</strong> Name each voice and the ' +
+        'minutes will use the names. ' + (unnamed ? plural(unnamed, 'voice has', 'voices have') + ' no name yet.' : '') +
+        '</p><datalist id="teamNames">' + (cache.team || []).filter(function (t) { return t.active; }).map(function (t) {
+          return '<option value="' + esc(personName(t.email)) + '">';
+        }).join('') + '</datalist>' +
+        labels.map(function (l) {
+          var s = bySpeaker[l];
+          return '<div class="bc-speaker"><label class="bc-field">Voice ' + esc(l) + ' · ' + esc(hms(s.ms / 1000)) +
+            '<input class="bc-input" list="teamNames" data-speaker="' + esc(l) + '" maxlength="60" value="' +
+            esc(names[l] || '') + '" placeholder="Name"></label><p class="bc-sample">“' +
+            esc(String(s.sample || '').slice(0, 160)) + (String(s.sample || '').length > 160 ? '…' : '') + '”</p></div>';
+        }).join('') +
+        '<div class="bc-actions"><button class="btn btn-blue btn-small" data-speakers-save="1">Save the names</button></div></div>';
+      body += '<details class="bc-transcript"><summary>Read the transcript (' +
+        plural(m.transcript.length, 'line', 'lines') + ')</summary><div class="bc-lines">' +
+        m.transcript.map(function (u) {
+          var who = String(names[u.speaker] || '').trim() || 'Voice ' + u.speaker;
+          return '<p><button type="button" class="bc-ts" data-seek="' + (+u.start || 0) + '" ' +
+            'aria-label="Play from ' + esc(clock(u.start)) + '">' + esc(clock(u.start)) + '</button>' +
+            '<b>' + esc(who) + '</b> ' + esc(u.text) + '</p>';
+        }).join('') + '</div></details>';
+    } else {
+      body += '<details class="bc-transcript"><summary>Read the transcript (' +
+        plural(String(m.transcript_text || '').split(/\n/).filter(Boolean).length, 'line', 'lines') +
+        ')</summary><div class="bc-lines bc-quote">' + esc(m.transcript_text || '') + '</div></details>';
+    }
+    if (m.minutes_status !== 'approved') {
+      body += '<div class="bc-actions"><button class="btn btn-ghost btn-small" data-meeting-form="paste" data-id="' +
+        esc(m.id) + '">Replace it with a pasted transcript</button></div>';
+    }
+    return body + '</div>';
+  }
+
+  function isStale(m) {
+    return m.minutes_status === 'drafting' && Date.now() - new Date(m.updated_at || 0).getTime() > DRAFT_STALE_MS;
+  }
+
+  function minutesBlock(m, hasTranscript, c) {
+    var id = esc(m.id);
+    if (m.minutes_status === 'drafting') {
+      cache.staleShown = isStale(m);
+      return cache.staleShown
+        ? '<div class="bc-pad bc-stack"><p class="bc-warnline">This is taking longer than it should, so it was probably ' +
+          'cut off. Try again — the second attempt uses a faster setting.</p><div class="bc-actions">' +
+          '<button class="btn btn-blue btn-small" data-draft="1">Try again</button></div></div>'
+        : '<p class="bc-working"><span class="spinner dark"></span> Claude is drafting the minutes. This usually takes ' +
+          'about a minute. You can leave this page.</p>';
+    }
+    if (m.minutes_status === 'draft' || m.minutes_status === 'approved') {
+      var approved = m.minutes_status === 'approved';
+      var share = '<button class="btn btn-outline btn-small" data-minutes-copy="1">Copy</button>' +
+        '<button class="btn btn-outline btn-small" data-minutes-email="1">Email them</button>' +
+        '<button class="btn btn-outline btn-small" data-minutes-download="1">Download</button>';
+      if (approved) {
+        return '<div class="bc-pad bc-stack"><div class="bc-quote bc-minutes">' + esc(m.minutes_text || '') + '</div>' +
+          '<div class="bc-actions">' + share +
+          (me.canAdmin ? '<button class="btn btn-ghost btn-small" data-minutes-reopen="1">Reopen for changes</button>' : '') +
+          '</div><p class="bc-meta">Approved minutes are the record and cannot be edited' +
+          (me.canAdmin ? ' unless they are reopened.' : '. Somebody with Manage access can reopen them.') + '</p></div>';
+      }
+      return '<div class="bc-pad bc-stack"><p class="bc-meta">A draft from Claude' +
+        (m.drafted_at ? ', ' + esc(ago(m.drafted_at)) : '') + '. Read it against what happened, correct anything ' +
+        'misheard, and approve it once the board has accepted it.</p>' +
+        '<label class="bc-sr" for="mtMinutes">The minutes</label>' +
+        '<textarea class="bc-input bc-minutes" id="mtMinutes" rows="24">' + esc(m.minutes_text || '') + '</textarea>' +
+        '<div class="bc-actions"><button class="btn btn-blue btn-small" data-minutes-save="1">Save changes</button>' +
+        '<button class="btn btn-primary btn-small" data-minutes-approve="1">Approve the minutes</button>' + share +
+        (c.drafting ? '<button class="btn btn-ghost btn-small" data-draft="1">Draft again</button>' : '') +
+        '</div></div>';
+    }
+    var intro = m.minutes_status === 'error'
+      ? '<p class="bc-warnline">' + esc(m.minutes_error || 'The draft did not finish.') + '</p>' : '';
+    if (!hasTranscript) {
+      return '<div class="bc-pad bc-stack">' + intro + '<p class="bc-meta">Minutes are drafted from the transcript, ' +
+        'so that comes first.</p></div>';
+    }
+    if (!c.drafting) {
+      return '<div class="bc-pad bc-stack">' + intro + '<p class="bc-meta">Drafting with Claude is not set up yet. ' +
+        'The transcript is above to write them from.</p></div>';
+    }
+    return '<div class="bc-pad bc-stack">' + intro + '<p class="bc-meta">Claude reads the transcript and drafts the ' +
+      'minutes: attendance, the discussion by topic, motions and votes, and the action items with who agreed to ' +
+      'do them. ' + (Array.isArray(m.transcript) && m.transcript.length ? 'Name the voices above first for better ' +
+      'minutes. ' : '') + 'Nobody we serve is named in a draft.</p><div class="bc-actions">' +
+      '<button class="btn btn-primary btn-small" data-draft="' + id + '">' +
+      (m.minutes_status === 'error' ? 'Try again' : 'Draft the minutes with Claude') + '</button></div></div>';
+  }
+
+  function actionItems(m) {
+    var tasks = cache.meetingTasks || [];
+    var today = localDate();
+    var suggested = Array.isArray(m.suggested_tasks) ? m.suggested_tasks : [];
+    var body = '';
+    if (suggested.length && !m.suggestions_handled &&
+        (m.minutes_status === 'draft' || m.minutes_status === 'approved')) {
+      body += '<div class="bc-pad bc-stack bc-suggest"><p class="bc-meta"><strong>Claude found ' +
+        plural(suggested.length, 'action item', 'action items') + '.</strong> Check who and when, untick any that ' +
+        'are not right, and they become tasks.</p>' +
+        suggested.map(function (s, i) {
+          return '<div class="bc-sugg" data-sugg="' + i + '">' +
+            '<input type="checkbox" class="bc-check" id="sg' + i + '" checked aria-label="Make this a task">' +
+            '<div class="bc-stack" style="gap:.4rem;flex:1;min-width:0">' +
+            '<input class="bc-input" data-sugg-title value="' + esc(s.title) + '" aria-label="Task">' +
+            (s.context ? '<p class="bc-sample">' + esc(s.context) + '</p>' : '') +
+            '<div class="bc-fieldrow"><label class="bc-field">Who' +
+            '<select class="bc-input" data-sugg-who>' + personOptions(s.assignee_email) + '</select></label>' +
+            '<label class="bc-field">Due<input type="date" class="bc-input" data-sugg-due value="' + esc(s.due_on || '') +
+            '"></label></div>' +
+            (s.owner_name && !s.assignee_email
+              ? '<p class="bc-sample">Claude heard “' + esc(s.owner_name) + '”, who is not on the team list. Pick ' +
+                'who should own it, or leave it for somebody to take on.</p>' : '') +
+            '</div></div>';
+        }).join('') +
+        '<div class="bc-actions"><button class="btn btn-primary btn-small" data-sugg-create="1">Create the ticked tasks</button>' +
+        '<button class="btn btn-ghost btn-small" data-sugg-dismiss="1">None of these</button></div></div>';
+    }
+    body += tasks.length
+      ? table('<th><span class="bc-sr">Done</span></th><th>Task</th><th>Who</th><th>Due</th>',
+          tasks.map(function (r) {
+            var done = r.status === 'done';
+            return '<tr class="click" data-drawer="task" data-id="' + esc(r.id) + '">' +
+              '<td class="bc-checkcell"><input type="checkbox" class="bc-check" data-task-done="' + esc(r.id) + '"' +
+              (done ? ' checked' : '') + ' aria-label="' + (done ? 'Reopen' : 'Mark done') + ': ' + esc(r.title) + '"></td>' +
+              '<td>' + rowLink('task', r.id, done ? '<s>' + esc(r.title) + '</s>' : esc(r.title)) + '</td>' +
+              '<td>' + owner(r.assignee_email) + '</td><td>' + dueText(r, today) + '</td></tr>';
+          }).join(''))
+      : (body ? '' : '<p class="bc-none">No tasks from this meeting yet.</p>');
+    var open = tasks.filter(function (t) { return t.status !== 'done'; }).length;
+    return card('4 · Action items', tasks.length ? plural(open, 'open task', 'open tasks') : null, body,
+      '<button class="btn btn-outline btn-small" data-task-new="1" data-task-meeting="' + esc(m.id) + '">+ Add a task</button>');
+  }
+
+  /** The record / upload / paste / edit form, in the drawer. `m` is set when
+   *  adding to a meeting that already exists. */
+  function meetingForm(kind, m) {
+    var existing = !!m;
+    var today = localDate();
+    var titles = { record: 'Record a meeting', upload: 'Upload a recording', paste: 'Paste a transcript', edit: 'Meeting details' };
+    var details = '<div class="bc-dsec"><h3>The meeting</h3>' +
+      '<label class="bc-field">Name<input class="bc-input" id="mfTitle" maxlength="120" value="' +
+      esc(m ? m.title : 'Board meeting') + '"></label>' +
+      '<div class="bc-fieldrow"><label class="bc-field">Kind<select class="bc-input" id="mfKind">' +
+      Object.keys(MEETING_KINDS).map(function (k) {
+        return '<option value="' + k + '"' + ((m ? m.kind : 'board') === k ? ' selected' : '') + '>' +
+          esc(MEETING_KINDS[k]) + '</option>';
+      }).join('') + '</select></label>' +
+      '<label class="bc-field">Date<input type="date" class="bc-input" id="mfDate" value="' +
+      esc(m ? m.held_on : today) + '"></label></div>' +
+      '<label class="bc-field">Who is there <span class="bc-hint">(optional — helps the minutes)</span>' +
+      '<input class="bc-input" id="mfWho" maxlength="500" value="' + esc(m ? m.attendees || '' : '') +
+      '" placeholder="Steve, Geneva, Lauren, Grant, Erica"></label></div>';
+    var consent = '<label class="bc-check-option"><input type="checkbox" class="bc-check" id="mfConsent"> ' +
+      '<span><strong>Everyone in the meeting knows it is being recorded.</strong> Say so at the start, so it is on ' +
+      'the recording too.</span></label>';
+    var boundary = '<p class="bc-warnline">Business meetings only. Don’t record a meeting where somebody we serve ' +
+      'is discussed — that is protected under 42 CFR Part 2 and stays out of the Board Center.</p>';
+    var body = '';
+
+    if (kind === 'edit') {
+      body = details + '<div class="bc-dsec"><div class="bc-actions"><button class="btn btn-blue btn-small" ' +
+        'data-meeting-save="' + esc(m.id) + '">Save</button></div></div>';
+    } else if (kind === 'record') {
+      var call = window.BoardRecorder && BoardRecorder.canCaptureCall();
+      body = details + '<div class="bc-dsec"><h3>Where is it?</h3>' +
+        '<label class="bc-check-option"><input type="radio" name="mfMode" value="room" checked> <span><strong>In the ' +
+        'room.</strong> This computer’s microphone. Put it in the middle of the table.</span></label>' +
+        '<label class="bc-check-option"><input type="radio" name="mfMode" value="call"' + (call ? '' : ' disabled') +
+        '> <span><strong>An online call</strong> — Google Meet, Zoom or Teams in another tab. ' +
+        (call ? 'When you choose Start, pick the call’s tab and switch on “Also share tab audio”. Wear headphones, ' +
+          'or the microphone records the call twice.'
+          : 'This needs Chrome or Edge on a computer.') + '</span></label></div>' +
+        '<div class="bc-dsec">' + boundary + consent +
+        '<div class="bc-actions"><button class="btn btn-primary btn-small" data-rec-start="1">● Start recording</button></div>' +
+        '<p class="bc-meta">The recording is kept safe in this browser as it goes, so a crash or a closed laptop ' +
+        'does not lose it.</p></div>';
+    } else if (kind === 'upload') {
+      body = (existing ? '' : details) + '<div class="bc-dsec"><h3>The recording</h3>' +
+        '<label class="bc-field">Audio or video file <span class="bc-hint">(up to 50 MB — about three hours of ' +
+        'audio)</span><input type="file" class="bc-input" id="mfFile" accept="audio/*,video/mp4,video/webm,video/quicktime,' +
+        '.m4a,.mp3,.wav,.webm,.ogg,.aac,.flac"></label>' +
+        '<p class="bc-meta">A phone’s voice memo, or a recording downloaded from Zoom. A Zoom download is smaller ' +
+        'as “audio only” (M4A).</p>' + boundary + consent +
+        '<div class="bc-actions"><button class="btn btn-primary btn-small" data-upload-go="' + esc(m ? m.id : '') +
+        '">Upload' + (cache.config && cache.config.transcription ? ' and transcribe' : '') + '</button></div></div>';
+    } else if (kind === 'paste') {
+      body = (existing ? '' : details) + '<div class="bc-dsec"><h3>The transcript</h3>' +
+        '<label class="bc-field">Paste it here<textarea class="bc-input" id="mfText" rows="12" ' +
+        'placeholder="Steve Turner: Let’s call the meeting to order…"></textarea></label>' +
+        '<p class="bc-meta"><strong>Google Meet:</strong> open the transcript document in Drive, select all, copy. ' +
+        '<strong>Zoom:</strong> the .vtt or .txt transcript from the recording. <strong>Tactiq or Read.ai:</strong> ' +
+        'copy the transcript, not the summary.</p>' +
+        (m && m.transcript_status === 'completed' ? '<p class="bc-warnline">This replaces the transcript the meeting ' +
+          'has now.</p>' : '') +
+        '<div class="bc-actions"><button class="btn btn-primary btn-small" data-paste-go="' + esc(m ? m.id : '') +
+        '">Save' + (cache.config && cache.config.drafting ? ' and draft the minutes' : '') + '</button></div></div>';
+    }
+    return dhead(titles[kind], existing && kind !== 'edit' ? m.title : '', null) + body;
+  }
+
+  /** The meeting details from the drawer form, or null (with a toast) when
+   *  something needed is missing. */
+  function readMeetingForm() {
+    var title = ($('mfTitle') && $('mfTitle').value || '').trim();
+    var day = $('mfDate') && $('mfDate').value;
+    if (!title) { showToast('Give the meeting a name.', 'error'); return null; }
+    if (!parseDay(day)) { showToast('Choose the date of the meeting.', 'error'); return null; }
+    return { title: title, kind: $('mfKind').value, held_on: parseDay(day),
+             attendees: ($('mfWho').value || '').trim() || null };
+  }
+
+  async function reloadMeeting() {
+    if (!meetingId) return;
+    var rows = await get('/meetings?select=*&id=eq.' + encodeURIComponent(meetingId));
+    cache.meeting = rows[0] || null;
+    cache.meetingTasks = cache.meeting
+      ? await get('/meeting_tasks?select=*&meeting_id=eq.' + encodeURIComponent(meetingId) +
+          '&order=status.desc,due_on.asc.nullslast,created_at')
+      : [];
+  }
+  function paintMeeting() {
+    if (view !== 'meetings') return;
+    // Unsaved edits to the draft survive a repaint -- saving the voices'
+    // names, or a poll, must not throw away somebody's corrections.
+    var keep = minutesDirty && $('mtMinutes') ? $('mtMinutes').value : null;
+    $('bcContent').innerHTML = V.meetings();
+    if (keep !== null && $('mtMinutes')) $('mtMinutes').value = keep;
+    else minutesDirty = false;
+    schedulePoll();
+  }
+
+  /** While a transcript or a draft is being made, check on it now and then.
+   *  The page is repainted only when something actually changed, so nothing
+   *  being typed is wiped by a poll. */
+  function schedulePoll() {
+    clearTimeout(pollTimer);
+    var m = cache.meeting;
+    if (view !== 'meetings' || !meetingId || !m) return;
+    if (m.transcript_status !== 'processing' && m.minutes_status !== 'drafting') return;
+    pollTimer = setTimeout(pollMeeting, m.minutes_status === 'drafting' ? 4000 : 8000);
+  }
+  async function pollMeeting() {
+    var id = meetingId;
+    var before = cache.meeting;
+    if (!before || view !== 'meetings' || meetingId !== id || document.hidden) { schedulePoll(); return; }
+    try {
+      if (before.transcript_status === 'processing') await callMeetingFn({ action: 'status', meeting_id: id });
+      var rows = await get('/meetings?select=*&id=eq.' + encodeURIComponent(id));
+      if (view !== 'meetings' || meetingId !== id || !rows[0]) return;
+      var m = rows[0];
+      var changed = m.transcript_status !== before.transcript_status || m.minutes_status !== before.minutes_status ||
+        (isStale(m) && !cache.staleShown);
+      cache.meeting = m;
+      if (changed) {
+        if (before.minutes_status === 'drafting' && m.minutes_status === 'draft') {
+          showToast('The draft minutes are ready.', 'success');
+          myTasksFresh = false;
+        }
+        if (before.minutes_status === 'drafting' && m.minutes_status === 'error') showToast(m.minutes_error || 'The draft failed.', 'error');
+        if (before.transcript_status === 'processing' && m.transcript_status === 'completed') {
+          showToast('The transcript is ready. Name the voices, then draft the minutes.', 'success');
+        }
+        await reloadMeeting();
+        paintMeeting();
+        return;
+      }
+    } catch (err) { console.warn('meeting poll', err); }
+    schedulePoll();
+  }
+
+  // ------------------------------------------------------------- recordings
+  function audioTypeOf(fileOrBlob, fallback) {
+    var t = String(fileOrBlob.type || '').split(';')[0].toLowerCase();
+    if (t) return t;
+    var ext = String(fileOrBlob.name || '').split('.').pop().toLowerCase();
+    return AUDIO_TYPES[ext] || fallback || 'audio/webm';
+  }
+  function encodePath(path) { return String(path).split('/').map(encodeURIComponent).join('/'); }
+  function storageMessage(status, text) {
+    var body = {};
+    try { body = JSON.parse(text || '{}'); } catch (e) { /* not JSON */ }
+    var msg = String(body.message || body.error || '');
+    if (status === 413 || /too large|maximum allowed size/i.test(msg)) {
+      return 'The file is bigger than the 50 MB the website accepts. Save it as audio only, or split it.';
+    }
+    if (/mime type/i.test(msg)) return 'That kind of file is not accepted. Use an audio file (M4A, MP3, WAV, WebM).';
+    if (/bucket not found/i.test(msg)) return 'Recordings are not set up on the server yet (see the README).';
+    if (status === 401 || status === 403 || /row-level security|unauthorized/i.test(msg)) return NOT_ALLOWED;
+    return 'The upload did not finish' + (msg ? ' (' + msg + ')' : '') + '. Please try again.';
+  }
+
+  /** Uploads straight to Storage with this person's own session -- the bucket
+   *  lets team members in and nobody else -- and records it on the meeting. */
+  async function uploadAudio(id, blob, type, seconds, onProgress) {
+    // A meeting can outlast the hour a sign-in token lives for.
+    await refresh();
+    if (!session || !session.access_token) throw new Error('You have been signed out. Sign in again — the recording is kept.');
+    var ext = AUDIO_EXT[type] || 'audio';
+    var path = id + '/' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
+    await new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', STORAGE + '/object/' + AUDIO_BUCKET + '/' + encodePath(path));
+      xhr.setRequestHeader('apikey', SUPABASE_KEY);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + session.access_token);
+      xhr.setRequestHeader('Content-Type', type);
+      xhr.setRequestHeader('x-upsert', 'false');
+      xhr.upload.onprogress = function (e) { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(storageMessage(xhr.status, xhr.responseText)));
+      };
+      xhr.onerror = function () { reject(new Error('The connection dropped during the upload. Please try again.')); };
+      xhr.send(blob);
+    });
+    var old = (cache.meeting && cache.meeting.id === id && cache.meeting.audio_path) || null;
+    await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(id), 'PATCH', {
+      audio_path: path, audio_mime: type, audio_bytes: blob.size, duration_seconds: seconds || null,
+    });
+    if (old && old !== path) removeAudioObject(old);
+    logActivity('upload', 'meetings', id, { bytes: blob.size });
+    return path;
+  }
+  function removeAudioObject(path) {
+    return authFetch(STORAGE + '/object/' + AUDIO_BUCKET + '/' + encodePath(path), { method: 'DELETE' })
+      .then(function (res) { return res.ok || res.status === 404 || res.status === 400; })
+      .catch(function () { return false; });
+  }
+  async function signedAudioUrl(path) {
+    var res = await authFetch(STORAGE + '/object/sign/' + AUDIO_BUCKET + '/' + encodePath(path), {
+      method: 'POST', body: JSON.stringify({ expiresIn: 3600 }),
+    });
+    var data = await res.json().catch(function () { return {}; });
+    var signed = data.signedURL || data.signedUrl;
+    if (!res.ok || !signed) throw new Error('Could not open the recording.');
+    return /^https?:/.test(signed) ? signed : STORAGE + (signed.charAt(0) === '/' ? '' : '/') + signed;
+  }
+  function saveToComputer(blob, title, day) {
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = slugify(title || 'meeting') + '-' + (day || localDate()) + '.' +
+      (AUDIO_EXT[String(blob.type).split(';')[0]] || 'webm');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(link.href); }, 60000);
+  }
+  /** Starts transcription if the server can; never fails the caller. */
+  async function startTranscription(id) {
+    var c = await loadMeetingConfig();
+    if (!c.transcription) return false;
+    try { await callMeetingFn({ action: 'transcribe', meeting_id: id }); return true; }
+    catch (err) { showToast(err.message, 'error'); return false; }
+  }
+
+  // --------------------------------------------------------- recording bar
+  // Lives outside #bcContent, so moving around the Board Center during a
+  // meeting does not touch the recording.
+  var recTicker = null;
+  function renderRecBar() {
+    var bar = $('recBar');
+    if (!bar) return;
+    var u = recUi;
+    clearInterval(recTicker);
+    clearTimeout(recTicker);
+    document.body.classList.toggle('bc-recbar-on', !!u);
+    if (!u) { bar.hidden = true; bar.innerHTML = ''; return; }
+    bar.hidden = false;
+    var title = '<span class="t">' + esc(u.title || 'Meeting') + '</span>';
+    var html = '';
+    if (u.phase === 'recording' || u.phase === 'paused') {
+      var paused = u.phase === 'paused';
+      html = '<span class="dot' + (paused ? ' paused' : '') + '" aria-hidden="true"></span>' +
+        '<b>' + (paused ? 'Paused' : 'Recording') + '</b><span class="time" id="recTime">' +
+        clock(BoardRecorder.elapsed()) + '</span><span class="meter" aria-hidden="true"><span id="recLevel"></span></span>' +
+        title + '<span class="grow"></span>' +
+        '<button class="btn btn-outline btn-small" data-rec="' + (paused ? 'resume' : 'pause') + '">' +
+        (paused ? 'Resume' : 'Pause') + '</button>' +
+        '<button class="btn btn-primary btn-small" data-rec="stop">■ Stop and save</button>' +
+        (u.warning ? '<p class="warn" role="alert">' + esc(u.warning) + '</p>' : '');
+      // Peaks are held and fall back slowly, so speech reads as a steady
+      // bar rather than a flicker -- enough to see the microphone is live.
+      var shown = 0;
+      recTicker = setInterval(function () {
+        var t = $('recTime'), l = $('recLevel');
+        shown = Math.max(BoardRecorder.level(), shown * 0.88);
+        if (t) t.textContent = clock(BoardRecorder.elapsed());
+        if (l) l.style.width = Math.round(shown * 100) + '%';
+      }, 100);
+    } else if (u.phase === 'saving') {
+      html = '<span class="spinner dark"></span><b>Saving</b>' + title + '<span class="grow"></span>' +
+        '<span class="time">' + (u.progress != null ? Math.round(u.progress * 100) + '%' : '') + '</span>';
+    } else if (u.phase === 'saved') {
+      recTicker = setTimeout(function () {
+        if (recUi === u) { recUi = null; renderRecBar(); }
+      }, 20000);
+      html = '<span class="ok" aria-hidden="true">✓</span><b>Saved</b>' + title +
+        '<span class="msg">' + esc(u.message || '') + '</span><span class="grow"></span>' +
+        '<button class="btn btn-blue btn-small" data-view="meetings" data-meeting="' + esc(u.meetingId) + '">Open the meeting</button>' +
+        '<button class="btn btn-ghost btn-small" data-rec="dismiss" aria-label="Close">×</button>';
+    } else if (u.phase === 'failed' || u.phase === 'recover') {
+      html = '<span class="dot paused" aria-hidden="true"></span><span class="msg"><b>' +
+        (u.phase === 'failed' ? 'Not uploaded yet.' : 'A recording was not uploaded.') + '</b> ' + esc(u.message || '') +
+        ' It is safe in this browser.</span><span class="grow"></span>' +
+        '<button class="btn btn-primary btn-small" data-rec="upload">' + (u.phase === 'failed' ? 'Try again' : 'Upload it') + '</button>' +
+        '<button class="btn btn-outline btn-small" data-rec="download">Save to this computer</button>' +
+        '<button class="btn btn-ghost btn-small admin-danger" data-rec="discard">Discard</button>';
+    }
+    bar.innerHTML = '<div class="bc-recbar-in" role="status" aria-live="polite">' + html + '</div>';
+  }
+
+  async function startRecording(btn) {
+    var details = readMeetingForm();
+    if (!details) return;
+    if (!$('mfConsent').checked) {
+      showToast('Tick the box once everyone knows the meeting is being recorded.', 'error');
+      $('mfConsent').focus();
+      return;
+    }
+    if (BoardRecorder.state() !== 'idle' || (recUi && recUi.phase === 'saving')) {
+      showToast('A recording is already running.', 'error');
+      return;
+    }
+    var mode = (document.querySelector('input[name="mfMode"]:checked') || {}).value || 'room';
+    var meta = Object.assign({}, details);
+    btn.disabled = true;
+    // Ask for the microphone first, so a refusal leaves no empty meeting behind.
+    try {
+      await BoardRecorder.start(mode, meta);
+    } catch (err) {
+      showToast(err.message, 'error');
+      btn.disabled = false;
+      return;
+    }
+    try {
+      var made = await writeRows(REST + '/meetings', 'POST', Object.assign({ consent_confirmed: true }, details));
+      // The recorder keeps a reference to `meta` and writes it with every
+      // chunk, so a recovered recording knows which meeting it belongs to.
+      meta.meeting_id = made[0].id;
+      logActivity('create', 'meetings', made[0].id, { title: details.title, recording: mode });
+    } catch (err) {
+      await BoardRecorder.cancel();
+      showToast(err.message, 'error');
+      btn.disabled = false;
+      return;
+    }
+    closeDrawer();
+    recUi = { phase: 'recording', title: details.title, meetingId: meta.meeting_id };
+    renderRecBar();
+    showToast('Recording. Say at the start that the meeting is being recorded.', 'success');
+    if (view === 'meetings' && !meetingId) render();
+  }
+
+  /** Uploads a finished (or recovered) recording to its meeting, creating the
+   *  meeting first if the tab died before it existed. */
+  async function saveRecording(result) {
+    var meta = result.meta || {};
+    recUi = { phase: 'saving', title: meta.title, progress: 0, result: result };
+    renderRecBar();
+    try {
+      if (result.blob.size > MAX_UPLOAD) {
+        throw new Error('It is ' + fileSize(result.blob.size) + ', over the 50 MB the website accepts. Save it to ' +
+          'this computer and send it to whoever looks after the website.');
+      }
+      var id = meta.meeting_id;
+      if (!id) {
+        var made = await writeRows(REST + '/meetings', 'POST', {
+          title: meta.title || 'Recovered recording', kind: meta.kind || 'other',
+          held_on: meta.held_on || localDate(result.startedAt), attendees: meta.attendees || null,
+          consent_confirmed: true,
+        });
+        id = made[0].id;
+        meta.meeting_id = id;
+      }
+      await uploadAudio(id, result.blob, audioTypeOf(result.blob, 'audio/webm'),
+        Math.round((result.durationMs || 0) / 1000), function (p) {
+          if (recUi && recUi.phase === 'saving') {
+            recUi.progress = p;
+            var t = document.querySelector('#recBar .time');
+            if (t) t.textContent = Math.round(p * 100) + '%';
+          }
+        });
+      await BoardRecorder.discard(result.id);
+      var transcribing = await startTranscription(id);
+      recUi = { phase: 'saved', title: meta.title, meetingId: id,
+        message: transcribing ? 'Transcribing now — it takes a few minutes.' : 'The recording is on the meeting.' };
+    } catch (err) {
+      recUi = { phase: 'failed', title: meta.title, message: err.message, result: result };
+    }
+    renderRecBar();
+    myTasksFresh = false;
+    if (view === 'meetings') {
+      if (meetingId && recUi.meetingId === meetingId) { await reloadMeeting().catch(function () {}); paintMeeting(); }
+      else if (!meetingId) render();
+    }
+    // Anything else waiting to be uploaded is offered next.
+    if (recUi.phase === 'saved') setTimeout(offerRecovery, 0);
+  }
+
+  async function offerRecovery() {
+    if (recUi && recUi.phase !== 'saved') return;
+    if (!window.BoardRecorder || BoardRecorder.state() !== 'idle') return;
+    var list = await BoardRecorder.pending();
+    if (!list.length) return;
+    var s = list[0];
+    var meta = s.meta || {};
+    recUi = { phase: 'recover', title: meta.title, pendingId: s.id,
+      message: '“' + (meta.title || 'A meeting') + '”, started ' +
+        new Date(s.startedAt).toLocaleString('en-US', { timeZone: EVENT_TZ, weekday: 'short', month: 'short',
+          day: 'numeric', hour: 'numeric', minute: '2-digit' }) +
+        (s.durationMs ? ', ' + hms(s.durationMs / 1000) : '') + (list.length > 1 ? ' (and ' + (list.length - 1) + ' more)' : '') + '.' };
+    renderRecBar();
+  }
+
+  async function recAction(what) {
+    var u = recUi || {};
+    if (what === 'pause') { BoardRecorder.pause(); recUi.phase = 'paused'; renderRecBar(); return; }
+    if (what === 'resume') { BoardRecorder.resume(); recUi.phase = 'recording'; renderRecBar(); return; }
+    if (what === 'stop') {
+      if (!confirm('Stop recording and save it to the meeting?')) return;
+      recUi = { phase: 'saving', title: u.title, progress: null };
+      renderRecBar();
+      var result;
+      try { result = await BoardRecorder.stop(); }
+      catch (err) { showToast(err.message, 'error'); recUi = null; renderRecBar(); return; }
+      await saveRecording(result);
+      return;
+    }
+    if (what === 'dismiss') { recUi = null; renderRecBar(); return; }
+
+    // Failed or recovered recordings: whichever one the bar is showing.
+    var getResult = u.result ? Promise.resolve(u.result) : BoardRecorder.assemble(u.pendingId);
+    var result = await getResult.catch(function () { return null; });
+    if (!result) {
+      if (u.pendingId) await BoardRecorder.discard(u.pendingId);
+      showToast('That recording has nothing in it, so it was cleared.', 'error');
+      recUi = null; renderRecBar(); offerRecovery();
+      return;
+    }
+    if (what === 'upload') { await saveRecording(result); return; }
+    if (what === 'download') { saveToComputer(result.blob, result.meta && result.meta.title, result.meta && result.meta.held_on); return; }
+    if (what === 'discard') {
+      if (!confirm('Throw this recording away? It cannot be brought back. Save it to this computer first if ' +
+                   'you might need it.')) return;
+      await BoardRecorder.discard(result.id);
+      recUi = null;
+      renderRecBar();
+      offerRecovery();
+    }
+  }
+
+  if (window.BoardRecorder) {
+    BoardRecorder.on(function (type) {
+      if (!recUi || (recUi.phase !== 'recording' && recUi.phase !== 'paused')) return;
+      if (type === 'tab-ended') {
+        recUi.warning = 'The call’s tab is no longer shared, so only this room’s microphone is being recorded.';
+        renderRecBar();
+      } else if (type === 'mic-ended') {
+        recUi.warning = 'The microphone was disconnected. Stop and save now so nothing more is lost.';
+        renderRecBar();
+      }
+    });
+  }
 
   // ------------------------------------------------------------ event list
   V.events = function () {
@@ -1359,6 +2330,27 @@
         '<p style="font-size:.79rem;color:var(--bc-ink-soft);margin:0">Takes effect the next time they open ' +
         'or refresh a page. Every change is written to the activity log.</p></div>';
     },
+    /** One task: change it, finish it, or remove it. */
+    task: function (id) {
+      var t = (cache.tasks || []).concat(cache.meetingTasks || []).filter(function (x) { return x.id === id; })[0];
+      if (!t) return '';
+      var done = t.status === 'done';
+      var from = t.meetings || (cache.meeting && cache.meeting.id === t.meeting_id ? cache.meeting : null);
+      var onThatMeeting = view === 'meetings' && meetingId && meetingId === t.meeting_id;
+      return dhead(t.title, from ? 'From ' + from.title + ' · ' + dayOf(from.held_on) : 'Added ' + ago(t.created_at),
+          done ? '<span class="bc-pill ok">Done</span>' : '<span class="bc-pill info">Open</span>') +
+        taskForm(t) +
+        '<div class="bc-dsec"><div class="bc-actions">' +
+        '<button class="btn ' + (done ? 'btn-outline' : 'btn-primary') + ' btn-small" data-task-toggle="' + esc(t.id) +
+        '">' + (done ? 'Reopen' : 'Mark done') + '</button>' +
+        (t.meeting_id && !onThatMeeting
+          ? '<button class="btn btn-outline btn-small" data-view="meetings" data-meeting="' + esc(t.meeting_id) +
+            '">Open the meeting</button>' : '') +
+        '<button class="btn btn-ghost btn-small admin-danger" data-task-del="' + esc(t.id) + '">Delete</button></div>' +
+        '<dl class="bc-kv"><dt>Added by</dt><dd>' + esc(personName(t.created_by) || '—') + ', ' + esc(ago(t.created_at)) + '</dd>' +
+        (done ? '<dt>Done by</dt><dd>' + esc(personName(t.completed_by) || '—') + ', ' + esc(ago(t.completed_at)) + '</dd>' : '') +
+        '</dl></div>';
+    },
   };
 
   // ------------------------------------------------------------------ loads
@@ -1389,6 +2381,36 @@
     boardroom: async function () {
       cache.documents = await get('/board_documents?select=*&order=category,label');
     },
+    tasks: async function () {
+      if (!sub) sub = 'mine';
+      var q = '/meeting_tasks?select=*,meetings(id,title,held_on)';
+      if (sub === 'done') q += '&status=eq.done&order=completed_at.desc&limit=200';
+      else {
+        q += '&status=eq.open&order=due_on.asc.nullslast,created_at.desc&limit=500';
+        if (sub === 'mine') q += '&assignee_email=eq.' + encodeURIComponent(me.jwtEmail);
+      }
+      var rows = await getOptional(q);
+      cache.tasksOff = rows === null;
+      cache.tasks = rows || [];
+    },
+    meetings: async function () {
+      // A failed check is not remembered, so the next visit asks again.
+      cache.config = await loadMeetingConfig();
+      if (meetingId) {
+        var one = await getOptional('/meetings?select=*&id=eq.' + encodeURIComponent(meetingId));
+        cache.meetingsOff = one === null;
+        if (one === null) return;
+        await reloadMeeting();
+        return;
+      }
+      var list = await getOptional('/meetings?select=id,title,kind,held_on,audio_path,duration_seconds,' +
+        'transcript_status,minutes_status,created_at&order=held_on.desc,created_at.desc&limit=200');
+      cache.meetingsOff = list === null;
+      if (list === null) return;
+      cache.meetings = list;
+      var open = await get('/meeting_tasks?select=meeting_id&status=eq.open&meeting_id=not.is.null');
+      cache.openByMeeting = open.reduce(function (acc, t) { acc[t.meeting_id] = (acc[t.meeting_id] || 0) + 1; return acc; }, {});
+    },
   };
   var PEOPLE_LOADERS = {
     volunteers: async function () { cache.volunteers = await get('/volunteer_interests?select=*&order=created_at.desc&limit=500'); },
@@ -1410,6 +2432,7 @@
 
     try {
       if (!summary) summary = await rpc('board_summary');
+      if (!myTasksFresh) await loadMyTasks();
       if (LOADERS[view]) await LOADERS[view]();
       if (view === 'people') {
         if (!sub) sub = 'contacts';
@@ -1421,6 +2444,8 @@
       if (view === 'boardroom' && !sub) sub = 'documents';
       if (view === 'events') { content.innerHTML = V.events(); await loadEvents(); renderNav(); return; }
       content.innerHTML = (V[view] || V.dashboard)();
+      minutesDirty = false;
+      if (view === 'meetings') schedulePoll();
     } catch (err) {
       content.innerHTML = '<div class="bc-gate hard"><h2>Could not load that</h2><p>' +
         esc(err.message || 'Something went wrong.') + '</p><p style="font-size:.83rem">If this keeps ' +
@@ -1434,9 +2459,18 @@
     if (b) b.focus();
   }
 
-  function go(nextView, nextSub) {
+  function go(nextView, nextSub, nextMeeting) {
+    if (minutesDirty && !confirm('Leave without saving your changes to the minutes?')) return;
+    minutesDirty = false;
+    clearTimeout(pollTimer);
     view = nextView;
     sub = nextSub || '';
+    meetingId = nextView === 'meetings' ? nextMeeting || null : null;
+    // "Saved -- open the meeting" has done its job once the meeting is open.
+    if (recUi && recUi.phase === 'saved' && meetingId && recUi.meetingId === meetingId) {
+      recUi = null;
+      renderRecBar();
+    }
     closeDrawer();
     render();
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -1447,12 +2481,20 @@
     var t = e.target;
 
     var nav = t.closest('[data-view]');
-    if (nav) { go(nav.dataset.view, nav.dataset.gosub); return; }
+    if (nav) { go(nav.dataset.view, nav.dataset.gosub, nav.dataset.meeting); return; }
 
     var tab = t.closest('[data-sub]');
     if (tab) { go(view, tab.dataset.sub); return; }
 
     if (t.closest('.bc-dhead .x') || t.id === 'bcScrim') { closeDrawer(); return; }
+
+    // Ticking a task done sits inside a row that opens the task, so it is
+    // handled before the row is.
+    var tick = t.closest('[data-task-done]');
+    if (tick) {
+      setTaskStatus(tick.dataset.taskDone, tick.checked, tick);
+      return;
+    }
 
     var row = t.closest('[data-drawer]');
     if (row) {
@@ -1769,6 +2811,398 @@
       return;
     }
 
+    // ---- meetings: the record / upload / paste / edit forms
+    if (btn && btn.dataset.meetingForm) {
+      var formKind = btn.dataset.meetingForm;
+      if (formKind === 'record' && !(window.BoardRecorder && BoardRecorder.supported())) {
+        showToast('This browser cannot record. Use a recent Chrome, Edge, Firefox or Safari.', 'error');
+        return;
+      }
+      if (formKind === 'record' && BoardRecorder.state() !== 'idle') {
+        showToast('A recording is already running — it is in the bar at the bottom.', 'error');
+        return;
+      }
+      cache.config = cache.config || await loadMeetingConfig();
+      var forMeeting = btn.dataset.id && cache.meeting && cache.meeting.id === btn.dataset.id ? cache.meeting : null;
+      openDrawer(meetingForm(formKind, forMeeting));
+      return;
+    }
+    if (btn && btn.dataset.recStart) { startRecording(btn); return; }
+    if (btn && btn.dataset.rec) { recAction(btn.dataset.rec); return; }
+
+    if (btn && btn.dataset.meetingSave) {
+      var edited = readMeetingForm();
+      if (!edited) return;
+      btn.disabled = true;
+      try {
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(btn.dataset.meetingSave), 'PATCH', edited);
+        logActivity('update', 'meetings', btn.dataset.meetingSave, { title: edited.title });
+        showToast('Saved.', 'success');
+        closeDrawer();
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+
+    if (btn && btn.dataset.uploadGo !== undefined) {
+      var file = $('mfFile') && $('mfFile').files[0];
+      if (!file) { showToast('Choose the recording to upload.', 'error'); return; }
+      if (file.size > MAX_UPLOAD) {
+        showToast('That file is ' + fileSize(file.size) + '. The limit is 50 MB — save it as audio only (M4A or MP3) ' +
+          'and try again.', 'error');
+        return;
+      }
+      var fileType = audioTypeOf(file);
+      if (!/^(audio|video)\//.test(fileType)) { showToast('That is not an audio or video file.', 'error'); return; }
+      if (!$('mfConsent').checked) {
+        showToast('Tick the box to confirm everyone knew the meeting was being recorded.', 'error');
+        return;
+      }
+      var target = btn.dataset.uploadGo;
+      var info = target ? null : readMeetingForm();
+      if (!target && !info) return;
+      btn.disabled = true;
+      try {
+        if (!target) {
+          var created = await writeRows(REST + '/meetings', 'POST', Object.assign({ consent_confirmed: true }, info));
+          target = created[0].id;
+          logActivity('create', 'meetings', target, { title: info.title, upload: true });
+        } else {
+          await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(target), 'PATCH', { consent_confirmed: true });
+        }
+        var seconds = await new Promise(function (resolve) {
+          // The length, read from the file itself, when the browser can.
+          var probe = document.createElement('audio');
+          var url = URL.createObjectURL(file);
+          var finish = function (v) { URL.revokeObjectURL(url); resolve(v); };
+          probe.preload = 'metadata';
+          probe.onloadedmetadata = function () { finish(isFinite(probe.duration) ? Math.round(probe.duration) : null); };
+          probe.onerror = function () { finish(null); };
+          setTimeout(function () { finish(null); }, 4000);
+          probe.src = url;
+        });
+        await uploadAudio(target, file, fileType, seconds, function (p) {
+          btn.textContent = 'Uploading… ' + Math.round(p * 100) + '%';
+        });
+        btn.textContent = 'Starting the transcript…';
+        var started = await startTranscription(target);
+        closeDrawer();
+        showToast(started ? 'Uploaded. Transcribing now — it takes a few minutes.' : 'Uploaded.', 'success');
+        go('meetings', '', target);
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Try again';
+        if (target && !btn.dataset.uploadGo) btn.dataset.uploadGo = target;
+      }
+      return;
+    }
+
+    if (btn && btn.dataset.pasteGo !== undefined) {
+      var text = ($('mfText') && $('mfText').value || '').trim();
+      if (text.length < 40) { showToast('Paste the whole transcript first.', 'error'); return; }
+      var into = btn.dataset.pasteGo;
+      var pinfo = into ? null : readMeetingForm();
+      if (!into && !pinfo) return;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Saving…';
+      try {
+        if (!into) {
+          var pmade = await writeRows(REST + '/meetings', 'POST', pinfo);
+          into = pmade[0].id;
+          logActivity('create', 'meetings', into, { title: pinfo.title, pasted: true });
+        }
+        await callMeetingFn({ action: 'paste', meeting_id: into, text: text });
+        var c2 = await loadMeetingConfig();
+        var drafting = false;
+        if (c2.drafting) {
+          try { await callMeetingFn({ action: 'draft', meeting_id: into }); drafting = true; }
+          catch (err) { showToast(err.message, 'error'); }
+        }
+        closeDrawer();
+        if (drafting) showToast('Saved. Claude is drafting the minutes.', 'success');
+        go('meetings', '', into);
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Try again';
+        if (into && !btn.dataset.pasteGo) btn.dataset.pasteGo = into;
+      }
+      return;
+    }
+
+    if (btn && btn.dataset.meetingDel) {
+      var gone = cache.meeting;
+      if (!gone || !confirm('Delete “' + gone.title + '”? Its recording, transcript and minutes go too. ' +
+                            'Tasks from it are kept.')) return;
+      btn.disabled = true;
+      try {
+        if (gone.audio_path) await removeAudioObject(gone.audio_path);
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(gone.id), 'DELETE', null);
+        logActivity('delete', 'meetings', gone.id, { title: gone.title });
+        showToast('Meeting deleted.', 'success');
+        myTasksFresh = false;
+        go('meetings');
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+
+    // ---- meetings: the recording
+    if (btn && btn.dataset.audioPlay) {
+      var mp = cache.meeting;
+      if (!mp || !mp.audio_path) return;
+      btn.disabled = true;
+      try {
+        var src = await signedAudioUrl(mp.audio_path);
+        $('mtAudio').innerHTML = '<audio controls preload="metadata" style="width:100%" src="' + esc(src) + '"></audio>';
+        btn.remove();
+        logActivity('read', 'meetings', mp.id, { recording: true });
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+    if (btn && btn.dataset.seek) {
+      var player = document.querySelector('#mtAudio audio');
+      var at = (+btn.dataset.seek || 0) / 1000;
+      if (!player && cache.meeting && cache.meeting.audio_path) {
+        try {
+          var seekSrc = await signedAudioUrl(cache.meeting.audio_path);
+          $('mtAudio').innerHTML = '<audio controls preload="metadata" style="width:100%" src="' + esc(seekSrc) + '"></audio>';
+          var playBtn = document.querySelector('[data-audio-play]');
+          if (playBtn) playBtn.remove();
+          player = document.querySelector('#mtAudio audio');
+        } catch (err) { showToast(err.message, 'error'); return; }
+      }
+      if (player) {
+        player.currentTime = Math.max(0, at - 1);
+        player.play().catch(function () {});
+        player.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      return;
+    }
+    if (btn && btn.dataset.audioDel) {
+      var ma = cache.meeting;
+      if (!ma || !ma.audio_path) return;
+      if (!confirm('Delete the recording of “' + ma.title + '”? The transcript and minutes stay.')) return;
+      try {
+        await removeAudioObject(ma.audio_path);
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(ma.id), 'PATCH',
+          { audio_path: null, audio_mime: null, audio_bytes: null });
+        logActivity('delete', 'meetings', ma.id, { recording: true });
+        showToast('Recording deleted.', 'success');
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+
+    // ---- meetings: transcript and draft
+    if (btn && btn.dataset.transcribe) {
+      btn.disabled = true;
+      try {
+        await callMeetingFn({ action: 'transcribe', meeting_id: meetingId });
+        showToast('Transcribing now — it takes a few minutes.', 'success');
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+    if (btn && btn.dataset.speakersSave) {
+      var named = {};
+      document.querySelectorAll('[data-speaker]').forEach(function (input) {
+        var v = input.value.trim();
+        if (v) named[input.dataset.speaker] = v;
+      });
+      btn.disabled = true;
+      try {
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(meetingId), 'PATCH', { speaker_names: named });
+        showToast(cache.meeting && cache.meeting.minutes_status === 'draft'
+          ? 'Names saved. Choose Draft again to use them in the minutes.' : 'Names saved.', 'success');
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+    if (btn && btn.dataset.draft) {
+      var md = cache.meeting;
+      if (!md) return;
+      if (md.minutes_status === 'draft' && !confirm('Draft the minutes again? The new draft replaces this one, ' +
+          'including any changes made to it.')) return;
+      btn.disabled = true;
+      try {
+        await callMeetingFn({ action: 'draft', meeting_id: md.id });
+        await reloadMeeting();
+        minutesDirty = false;
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+
+    // ---- meetings: the minutes
+    if (btn && btn.dataset.minutesSave) {
+      try {
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(meetingId), 'PATCH',
+          { minutes_text: $('mtMinutes').value });
+        logActivity('update', 'meetings', meetingId, { minutes: 'edited' });
+        minutesDirty = false;
+        showToast('Saved.', 'success');
+        cache.meeting.minutes_text = $('mtMinutes').value;
+      } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+    if (btn && btn.dataset.minutesApprove) {
+      var mm = cache.meeting;
+      if (!confirm('Approve these minutes?\n\nApproved minutes are the organization’s record of the meeting and ' +
+                   'can no longer be edited. Approve them once the board has accepted them.')) return;
+      btn.disabled = true;
+      try {
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(mm.id), 'PATCH',
+          { minutes_text: $('mtMinutes').value, minutes_status: 'approved' });
+        logActivity('approve', 'meetings', mm.id, { title: mm.title });
+        minutesDirty = false;
+        myTasksFresh = false;
+        if (mm.audio_path && confirm('The minutes are approved. Delete the recording now?\n\nThe minutes are the ' +
+            'record. Keeping the recording uses storage and keeps people’s words longer than anyone needs them.')) {
+          await removeAudioObject(mm.audio_path);
+          await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(mm.id), 'PATCH',
+            { audio_path: null, audio_mime: null, audio_bytes: null });
+          logActivity('delete', 'meetings', mm.id, { recording: true });
+        }
+        showToast('Minutes approved.', 'success');
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+    if (btn && btn.dataset.minutesReopen) {
+      if (!confirm('Reopen these approved minutes for changes? They go back to being a draft until somebody ' +
+                   'approves them again.')) return;
+      try {
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(meetingId), 'PATCH', { minutes_status: 'draft' });
+        logActivity('reopen', 'meetings', meetingId);
+        await reloadMeeting();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+    if (btn && (btn.dataset.minutesCopy || btn.dataset.minutesEmail || btn.dataset.minutesDownload)) {
+      var mc = cache.meeting;
+      var minutesText = $('mtMinutes') ? $('mtMinutes').value : (mc.minutes_text || '');
+      if (btn.dataset.minutesDownload) {
+        var file2 = new Blob([minutesText.replace(/\n/g, '\r\n')], { type: 'text/plain;charset=utf-8' });
+        var dl = document.createElement('a');
+        dl.href = URL.createObjectURL(file2);
+        dl.download = 'minutes-' + mc.held_on + '-' + slugify(mc.title) + '.txt';
+        document.body.appendChild(dl);
+        dl.click();
+        document.body.removeChild(dl);
+        URL.revokeObjectURL(dl.href);
+        return;
+      }
+      var copied = false;
+      try { await navigator.clipboard.writeText(minutesText); copied = true; } catch (err) { /* see below */ }
+      if (btn.dataset.minutesCopy) {
+        showToast(copied ? 'Copied. Paste them into an email or a Google Doc.' : 'Could not copy — select the text and copy it instead.',
+          copied ? 'success' : 'error');
+        return;
+      }
+      // Gmail takes the body from the link itself, and very long links get
+      // refused, so long minutes go by the clipboard instead.
+      var fits = minutesText.length <= 6000;
+      var subject = (mc.minutes_status === 'approved' ? 'Minutes: ' : 'Draft minutes: ') + mc.title + ', ' + dayOf(mc.held_on);
+      var mailBody = fits ? minutesText : (copied ? '[The minutes are copied — paste them here.]' : '');
+      window.open('https://mail.google.com/mail/?authuser=' + encodeURIComponent(me.jwtEmail) +
+        '&view=cm&fs=1&su=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(mailBody), '_blank', 'noopener');
+      if (!fits) showToast(copied ? 'The minutes are copied — paste them into the email.' : 'Copy the minutes into the email by hand.', copied ? 'success' : 'error');
+      return;
+    }
+
+    // ---- meetings: action items Claude found
+    if (btn && (btn.dataset.suggCreate || btn.dataset.suggDismiss)) {
+      var ms = cache.meeting;
+      var picked = [];
+      if (btn.dataset.suggCreate) {
+        document.querySelectorAll('[data-sugg]').forEach(function (row) {
+          if (!row.querySelector('input[type="checkbox"]').checked) return;
+          var titleVal = row.querySelector('[data-sugg-title]').value.trim();
+          if (!titleVal) return;
+          picked.push({
+            meeting_id: ms.id, title: titleVal, source: 'minutes',
+            assignee_email: row.querySelector('[data-sugg-who]').value || null,
+            due_on: parseDay(row.querySelector('[data-sugg-due]').value) || null,
+            detail: (ms.suggested_tasks[+row.dataset.sugg] || {}).context || null,
+          });
+        });
+        if (!picked.length) { showToast('Nothing is ticked. Choose “None of these” instead.', 'error'); return; }
+      }
+      btn.disabled = true;
+      try {
+        if (picked.length) {
+          var made2 = await writeRows(REST + '/meeting_tasks', 'POST', picked);
+          logActivity('create', 'meeting_tasks', ms.id, { count: made2.length, from: 'minutes' });
+        }
+        await writeRows(REST + '/meetings?id=eq.' + encodeURIComponent(ms.id), 'PATCH', { suggestions_handled: true });
+        myTasksFresh = false;
+        showToast(picked.length ? plural(picked.length, 'task', 'tasks') + ' created.' : 'Dismissed.', 'success');
+        await reloadMeeting();
+        await loadMyTasks();
+        renderNav();
+        paintMeeting();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+
+    // ---- tasks
+    if (btn && btn.dataset.taskNew) {
+      openDrawer(dhead('New task', btn.dataset.taskMeeting && cache.meeting ? 'For ' + cache.meeting.title : '', null) +
+        taskForm(null, btn.dataset.taskMeeting || ''));
+      if ($('tkTitle')) $('tkTitle').focus();
+      return;
+    }
+    if (btn && btn.dataset.taskSave !== undefined) {
+      var tkTitle = $('tkTitle').value.trim();
+      if (!tkTitle) { showToast('Say what the task is.', 'error'); return; }
+      var due = parseDay($('tkDue').value);
+      if (due === null) { showToast('That due date is not a date.', 'error'); return; }
+      var rec = {
+        title: tkTitle, detail: $('tkDetail').value.trim() || null,
+        assignee_email: $('tkWho').value || null, due_on: due || null,
+      };
+      btn.disabled = true;
+      try {
+        var tid = btn.dataset.taskSave;
+        if (tid) {
+          await writeRows(REST + '/meeting_tasks?id=eq.' + encodeURIComponent(tid), 'PATCH', rec);
+          logActivity('update', 'meeting_tasks', tid, { assignee: rec.assignee_email, due_on: rec.due_on });
+        } else {
+          if (btn.dataset.taskMeeting) rec.meeting_id = btn.dataset.taskMeeting;
+          var tmade = await writeRows(REST + '/meeting_tasks', 'POST', rec);
+          logActivity('create', 'meeting_tasks', tmade[0].id, { assignee: rec.assignee_email });
+        }
+        showToast(rec.assignee_email && rec.assignee_email !== me.jwtEmail
+          ? 'Saved — ' + personName(rec.assignee_email) + ' will see it under Tasks.' : 'Saved.', 'success');
+        closeDrawer();
+        await refreshAfterTaskChange();
+      } catch (err) { showToast(err.message, 'error'); btn.disabled = false; }
+      return;
+    }
+    if (btn && btn.dataset.taskToggle) {
+      var tt = (cache.tasks || []).concat(cache.meetingTasks || []).filter(function (x) { return x.id === btn.dataset.taskToggle; })[0];
+      if (tt) { closeDrawer(); await setTaskStatus(tt.id, tt.status !== 'done'); }
+      return;
+    }
+    if (btn && btn.dataset.taskDel) {
+      if (!confirm('Delete this task? If it is simply finished, mark it done instead so there is a record.')) return;
+      try {
+        var tgone = await writeRows(REST + '/meeting_tasks?id=eq.' + encodeURIComponent(btn.dataset.taskDel), 'DELETE', null);
+        logActivity('delete', 'meeting_tasks', btn.dataset.taskDel, { title: tgone && tgone[0] && tgone[0].title });
+        showToast('Task deleted.', 'success');
+        closeDrawer();
+        await refreshAfterTaskChange();
+      } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+
     // ---- exports
     if (btn && btn.dataset.export === 'enquiries') {
       downloadCsv('enquiries', ['Name', 'Email', 'Phone', 'About', 'Message', 'Stage', 'Owner', 'Received'],
@@ -1805,6 +3239,15 @@
   });
 
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDrawer(); });
+
+  // Edits to a draft of the minutes are not saved as they are typed, so
+  // leaving with unsaved ones asks first.
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.id === 'mtMinutes') minutesDirty = true;
+  });
+  window.addEventListener('beforeunload', function (e) {
+    if (minutesDirty || (recUi && recUi.phase === 'saving')) { e.preventDefault(); e.returnValue = ''; }
+  });
 
   // ------------------------------------------------------------------- boot
   async function start() {
@@ -1846,6 +3289,9 @@
     $('bcRole').textContent = me.canAdmin ? 'Administrator' : me.canGiving ? 'Giving access' : 'Team';
     $('bcAvatar').textContent = initials(mine.label || mine.email);
     await render();
+    // A recording that never made it up -- a crash, a closed lid -- is
+    // offered as soon as somebody signs in on this browser.
+    if (window.BoardRecorder) offerRecovery();
   }
 
   $('loginForm').addEventListener('submit', async function (e) {
@@ -1968,6 +3414,10 @@
   });
 
   $('signOutBtn').addEventListener('click', async function () {
+    if (window.BoardRecorder && BoardRecorder.state() !== 'idle') {
+      showToast('Stop and save the recording before signing out.', 'error');
+      return;
+    }
     try { await authFetch(AUTH + '/logout', { method: 'POST' }); } catch (err) { /* local sign-out either way */ }
     saveSession(null);
     location.reload();
