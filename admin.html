@@ -261,9 +261,13 @@
   <div class="bc-scrim" id="bcScrim"></div>
   <aside class="bc-drawer" id="bcDrawer" aria-label="Record detail" aria-hidden="true" inert></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <!-- The meeting recorder's bar. Outside #bcContent so moving between
+       sections during a meeting never touches the recording. -->
+  <div class="bc-recbar" id="recBar" hidden></div>
 
   <!-- events.js supplies SUPABASE_URL, SUPABASE_KEY and EVENT_TZ. -->
   <script src="/events.js"></script>
+  <script src="/board-recorder.js"></script>
   <script src="/board-center.js"></script>
 </body>
 </html>

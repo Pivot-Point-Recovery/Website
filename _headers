@@ -17,7 +17,16 @@
 #   connect-src *.supabase.co        — public-forms edge function (contact, volunteer,
 #                                      event RSVP) plus Supabase Auth and the events table
 #                                      read by /events, /event and /admin
+#   media-src  blob: *.supabase.co   — /admin plays back a meeting recording, from a signed
+#                                      Storage link
 #   'unsafe-inline'                  — the page-level <script>/<style> blocks in each HTML file
+#
+# Permissions-Policy: microphone=(self) lets /admin record meetings. It is set
+# site-wide rather than on /admin alone because Pages joins two matching rules'
+# values with a comma, and "microphone=(), microphone=(self)" leaves which one
+# wins up to the browser. (self) still refuses every other origin, and no other
+# page asks for the microphone. display-capture -- recording an online call's
+# tab -- is (self) by default and needs no entry.
 
 /*
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
@@ -25,5 +34,5 @@
   X-Frame-Options: DENY
   X-XSS-Protection: 1; mode=block
   Referrer-Policy: strict-origin-when-cross-origin
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(self)
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://*.supabase.co; frame-ancestors 'none'; object-src 'none'; base-uri 'self';
+  Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(self)
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; media-src 'self' blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co; frame-ancestors 'none'; object-src 'none'; base-uri 'self';

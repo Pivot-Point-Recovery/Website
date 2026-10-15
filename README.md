@@ -266,13 +266,15 @@ depending on JavaScript or a database read.
 ### /admin — the Board Center
 
 `/admin` is the staff and board workspace: `admin.html` (shell and the event
-form), `board-center.css` (app shell) and `board-center.js` (everything else).
+form), `board-center.css` (app shell), `board-recorder.js` (the meeting
+recorder) and `board-center.js` (everything else).
 Still no build step and no dependencies — plain files served by Pages, talking
 to Supabase Auth and PostgREST over `fetch`.
 
 | Section | What it holds |
 | --- | --- |
-| Dashboard | Counts, what needs a person, next event, giving by fund |
+| Dashboard | Counts, what needs a person (your overdue tasks included), next event, giving by fund |
+| Tasks | What each person has taken on — from a meeting's minutes or added by hand. Mine / everyone's / done |
 | People → Contacts | Contact-form submissions, with stage, owner, contact date and notes. Newsletter sign-ups will land here too once a sign-up form exists |
 | People → Volunteers | Sign-ups with a pipeline: new → screened → onboarding → active |
 | People → Intake | The intake work queue. Reference numbers only — see below |
@@ -280,6 +282,7 @@ to Supabase Auth and PostgREST over `fetch`.
 | Events | The event editor, with each event's RSVPs and guest-list export under it |
 | Giving | Totals for everyone; donor names and amounts for finance only |
 | Board room → Documents | The shared Google Drive, plus labelled links grouped by section |
+| Meetings | Record a meeting (or upload / paste a transcript), Claude drafts the minutes, a person approves them, action items become tasks |
 | Activity log | Every change, and every read of a confidential record (administrators only) |
 
 "Today" is New York's date everywhere — the overdue count, the overdue
@@ -351,6 +354,86 @@ is written to the activity log.
 - **Change who gets it:** the same `notification_recipients` rows as every
   other staff email.
 - **Pause it:** `update cron.job set active = false where jobname like 'board-digest%';`
+
+#### Meetings, minutes and tasks
+
+**Why this exists.** Google Meet used to record, transcribe and take Gemini
+notes for the team. It stopped in June 2026, when the Workspace account moved
+from **Business Plus** to the no-cost **Google Workspace for Nonprofits**
+edition (Business Plus cancelled 13 June; nonprofit edition applied 15 June).
+That edition does not include Meet recording, Meet transcripts or "Take notes
+for me" — Google's own lists of editions with
+[recording](https://support.google.com/meet/answer/9308681) and
+[transcripts](https://support.google.com/meet/answer/12849897) leave it out.
+Nothing is broken in Google; the feature is not in the plan. Moving to the
+nonprofit-discounted Business Standard brings it back, per person, if that is
+ever preferred to this.
+
+**What a meeting goes through** (Meetings, in the Board Center):
+
+1. **Record** — *In the room* uses the computer's microphone; *An online call*
+   (Chrome or Edge on a computer) also captures the tab the Meet/Zoom call is
+   in, after the person ticks "Also share tab audio". Or **upload** a file
+   (phone voice memo, Zoom audio download), or **paste** a transcript from
+   Meet, Zoom, Tactiq or Read.ai.
+2. **Transcribe** — `meeting-minutes` sends AssemblyAI a signed link to the
+   recording (speaker labels on), collects the transcript, then deletes
+   AssemblyAI's copy. People name each voice ("Voice A is Steve").
+3. **Draft** — Claude (`claude-opus-5-5`, structured JSON output) writes the
+   minutes: attendance, discussion by topic, motions with mover, seconder and
+   outcome, action items with owner and due date, open questions.
+4. **Approve** — a person corrects the draft and approves it once the board
+   has accepted it. Approved minutes are frozen (`meetings_guard`); only
+   Manage access can reopen them. Approving offers to delete the recording.
+5. **Tasks** — the action items are offered as tasks with the owner matched to
+   the team list. Nothing becomes a task until somebody ticks it.
+
+**A recording cannot be lost to a crash.** `board-recorder.js` writes every
+five seconds of audio to the browser's IndexedDB as it records. If the tab
+crashes or the lid closes, the next sign-in on that browser offers *Upload it /
+Save to this computer / Discard*. A Web Lock marks a recording that is still
+running in another tab, so it is never offered as "lost".
+
+**The 42 CFR Part 2 boundary holds here too.** The page says, before anybody
+records, that this is for business meetings — not case reviews. The drafting
+prompt replaces anybody the organization serves with "a participant" and sets
+`mentions_participants`, which puts a warning on the meeting. AssemblyAI and
+Anthropic do not train on API data, but neither has a signed BAA with us: do
+not use this for anything protected under HIPAA or Part 2 without one. Both
+offer BAAs.
+
+**Setup**, once:
+
+```sh
+supabase db push                                   # 20261015180000_meetings_and_tasks.sql
+supabase secrets set ANTHROPIC_API_KEY="sk-ant-..." ASSEMBLYAI_API_KEY="..."
+supabase functions deploy meeting-minutes --no-verify-jwt
+curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/meeting-minutes?health=1"
+```
+
+Either key alone is useful: with only `ANTHROPIC_API_KEY`, recordings are
+kept and pasted transcripts are drafted; with only `ASSEMBLYAI_API_KEY`,
+recordings are transcribed. The page says what is missing. Until the
+migration runs, Meetings and Tasks say "not switched on yet" and the rest of
+the Board Center is unaffected.
+
+**Cost.** AssemblyAI: $0.21 an hour plus $0.02 for speaker labels; new
+accounts get $50 of credit (about 200 hours). Claude: roughly $0.20–$0.40 to
+draft a 90-minute meeting at $4 / $20 per million tokens.
+
+**Limits that come from the free Supabase plan.**
+
+| Limit | Effect |
+| --- | --- |
+| 50 MB per upload | About 3 hours recorded here (32 kbps Opus). Larger uploads are refused with a message; a recording stays in the browser so nothing is lost |
+| 1 GB storage | About 70 hours of recordings. Delete each recording once its minutes are approved |
+| 150 s per function call | A Claude draft that runs past it fails with "try again"; the second attempt uses `effort: low` and is faster. Pro raises the limit to 400 s |
+
+**Where things live.** `meetings` (one row per meeting: recording path,
+transcript, minutes), `meeting_tasks` (with or without a meeting), and the
+private `meeting-audio` Storage bucket. All three are readable and writable by
+active team members only, by RLS. Every create, upload, draft, approval and
+deletion is in the activity log.
 
 #### Roles
 
@@ -654,6 +737,7 @@ supabase/
     admin-users/         team sign-ins and passwords (admin only)
     board-digest/        the Monday summary email to staff (pg_cron)
     intake-webhook/      Google Form intake -> queue + staff email
+    meeting-minutes/     transcribe a recording, Claude drafts the minutes
     public-forms/        contact + volunteer + event RSVP
     donations-checkout/  opens Stripe Checkout
     donations-reconcile/ settles gifts the webhook missed (pg_cron, 15 min)
@@ -668,6 +752,7 @@ supabase db push
 supabase functions deploy admin-users                     # JWT verification ON
 supabase functions deploy board-digest      --no-verify-jwt
 supabase functions deploy intake-webhook    --no-verify-jwt
+supabase functions deploy meeting-minutes   --no-verify-jwt
 supabase functions deploy public-forms      --no-verify-jwt
 supabase functions deploy donations-checkout --no-verify-jwt
 supabase functions deploy donations-webhook  --no-verify-jwt
@@ -701,11 +786,13 @@ short alias list, so a name that is *close* still works — but check
 | `SITE_URL` | checkout, webhook | Defaults to `https://pivotpointrecovery.org` |
 | `DONOR_RECEIPTS` | webhook | Receipts on; set `0` to suppress |
 | `ALLOWED_ORIGINS` | all three | Defaults to the production hosts + `*.pages.dev` + localhost |
+| `ANTHROPIC_API_KEY` | meeting-minutes | No drafted minutes; recordings and transcripts still work |
+| `ASSEMBLYAI_API_KEY` | meeting-minutes | Recordings are kept but not transcribed; pasted transcripts still work |
 
 Health-check every function at once:
 
 ```sh
-for fn in public-forms intake-webhook donations-checkout donations-webhook donations-reconcile; do
+for fn in public-forms intake-webhook meeting-minutes donations-checkout donations-webhook donations-reconcile; do
   echo -n "$fn: "
   curl -s "https://ihgwhglatsbhngbsezuj.supabase.co/functions/v1/$fn?health=1"; echo
 done
